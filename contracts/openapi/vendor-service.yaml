@@ -1,0 +1,356 @@
+openapi: 3.0.3
+info:
+  title: Vendor Service API
+  version: 1.0.0
+  description: Authoritative record of approved suppliers, the products they're authorized to supply, and payment terms. Does not track purchase orders or decide when to order.
+
+components:
+  schemas:
+    Vendor:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        contactEmail:
+          type: string
+          format: email
+        contactPhone:
+          type: string
+        paymentTerms:
+          type: string
+          example: "Net 30"
+        leadTimeDays:
+          type: integer
+        status:
+          type: string
+          enum: [PENDING, APPROVED, SUSPENDED, ARCHIVED]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    VendorProduct:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        vendorId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        unitCost:
+          type: string
+          description: Decimal amount as a string to preserve precision.
+          example: "250.00"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SupplierForSku:
+      type: object
+      description: An approved vendor authorized to supply a given SKU, with pricing and terms. This is the shape Procurement consumes when locking in a purchase order.
+      properties:
+        vendorId:
+          type: string
+          format: uuid
+        vendorName:
+          type: string
+        paymentTerms:
+          type: string
+        leadTimeDays:
+          type: integer
+        unitCost:
+          type: string
+          example: "250.00"
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+  parameters:
+    VendorIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+paths:
+  /api/vendors:
+    get:
+      summary: Retrieve all vendors
+      description: Returns vendors in every status (PENDING, APPROVED, SUSPENDED, ARCHIVED) — this endpoint is unfiltered for back-office admin use. Procurement-facing lookups should use /api/vendors/sku/{sku}/suppliers instead, which filters to APPROVED only.
+      responses:
+        "200":
+          description: A list of vendors.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Vendor"
+    post:
+      summary: Create a new vendor profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                [name, contactEmail, contactPhone, paymentTerms, leadTimeDays]
+              properties:
+                name:
+                  type: string
+                contactEmail:
+                  type: string
+                  format: email
+                contactPhone:
+                  type: string
+                  example: "+254712345678"
+                paymentTerms:
+                  type: string
+                leadTimeDays:
+                  type: integer
+                  minimum: 0
+      responses:
+        "201":
+          description: Vendor created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vendor"
+        "400":
+          description: Missing or invalid fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A vendor with this email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/vendors/{id}:
+    get:
+      summary: Get a vendor by ID
+      parameters:
+        - $ref: "#/components/parameters/VendorIdParam"
+      responses:
+        "200":
+          description: Vendor found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vendor"
+        "400":
+          description: Invalid vendor ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Vendor not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      summary: Partially update a vendor
+      description: Only fields present in the request body are validated and applied. At least one field must be provided.
+      parameters:
+        - $ref: "#/components/parameters/VendorIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                contactEmail:
+                  type: string
+                  format: email
+                contactPhone:
+                  type: string
+                paymentTerms:
+                  type: string
+                leadTimeDays:
+                  type: integer
+                  minimum: 0
+                status:
+                  type: string
+                  enum: [PENDING, APPROVED, SUSPENDED, ARCHIVED]
+      responses:
+        "200":
+          description: Vendor updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vendor"
+        "400":
+          description: Invalid vendor ID, invalid field value, or no fields provided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Vendor not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A vendor with this email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/vendors/sku/{sku}/suppliers:
+    get:
+      summary: List approved vendors authorized to supply a given SKU
+      description: Returns only APPROVED vendors with a cost entry for this SKU, joined with their payment terms and lead time. This is the contract Procurement relies on to validate authorization and lock in pricing when creating a purchase order.
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of approved suppliers for this SKU (may be empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SupplierForSku"
+        "400":
+          description: SKU is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/vendors/{vendorId}/products:
+    get:
+      summary: List all products a specific vendor is authorized to supply
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: List of vendor-product cost entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VendorProduct"
+        "400":
+          description: Invalid vendor ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Vendor not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Add a product and cost to a vendor's catalog
+      parameters:
+        - name: vendorId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku, unitCost]
+              properties:
+                sku:
+                  type: string
+                unitCost:
+                  type: string
+                  description: Decimal amount as a string, up to 2 decimal places.
+                  example: "250.00"
+      responses:
+        "201":
+          description: Vendor-product entry created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorProduct"
+        "400":
+          description: Invalid vendor ID, missing SKU, or invalid unit cost format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Vendor not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This vendor already has a cost entry for this SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/vendors/products/{id}:
+    delete:
+      summary: Remove a vendor-product catalog entry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Vendor product deleted successfully.
+        "400":
+          description: Invalid product ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Vendor product not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
