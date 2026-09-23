@@ -1,3 +1,17 @@
+export enum VendorStatus {
+  PENDING = "PENDING",
+  APPROVED = "APPROVED",
+  SUSPENDED = "SUSPENDED",
+  ARCHIVED = "ARCHIVED",
+}
+
+export class NotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
 export interface Vendor {
   id: string;
   name: string;
@@ -5,8 +19,9 @@ export interface Vendor {
   contactPhone: string;
   paymentTerms: string;
   leadTimeDays: number;
-  status: string;
+  status: VendorStatus;
   createdAt: Date;
+  updatedAt?: Date;
 }
 
 export interface CreateVendorDTO {

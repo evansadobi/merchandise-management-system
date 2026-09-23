@@ -29,7 +29,7 @@ export const vendors = pgTable("vendors", {
 
   leadTimeDays: integer("lead_time_days").notNull(),
 
-  status: vendorStatusEnum("status").default("APPROVED").notNull(),
+  status: vendorStatusEnum("status").default("PENDING").notNull(),
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
 
@@ -65,9 +65,6 @@ export const vendorProducts = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => ({
-    // A vendor can only have ONE cost entry per SKU — prevents duplicate/
-    // contradictory pricing for the same product from the same supplier.
-    // Different vendors CAN still supply the same SKU (that's the point).
     vendorSkuUnique: unique("vendor_products_vendor_id_sku_unique").on(
       table.vendorId,
       table.sku,

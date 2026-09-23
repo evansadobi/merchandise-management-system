@@ -11,6 +11,8 @@ const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
 const client = new Redis(redisUrl);
 const inventoryRepo = new InventoryRepository();
 
+let running = false;
+
 async function ensureConsumerGroup() {
   try {
     await client.xgroup("CREATE", STREAM_NAME, CONSUMER_GROUP, "$", "MKSTREAM");
@@ -27,11 +29,51 @@ export async function startEventSubscriber() {
     `Inventory service listening to stream ${STREAM_NAME} via consumer group ${CONSUMER_GROUP}`,
   );
 
+  running = true;
   pollStream();
 }
 
+export function stopEventSubscriber() {
+  running = false;
+}
+
+async function handlePurchaseOrderApproved(
+  id: string,
+  poId: string,
+  sku: string,
+  quantity: number,
+  targetLocation: string,
+) {
+  const updated = await inventoryRepo.incrementOnOrder(
+    sku,
+    targetLocation,
+    quantity,
+  );
+
+  if (updated) {
+    console.log(
+      `Processed PurchaseOrderApproved stream entry ${id} for PO ${poId}: SKU ${sku} at ${targetLocation} by +${quantity}`,
+    );
+    return;
+  }
+
+  console.log(
+    `No inventory record for SKU ${sku} at ${targetLocation} — creating one (PO ${poId}).`,
+  );
+  await inventoryRepo.create({
+    productName: sku, // placeholder; Inventory doesn't know the real name yet
+    sku,
+    locationId: targetLocation,
+    quantityOnHand: 0,
+  });
+  await inventoryRepo.incrementOnOrder(sku, targetLocation, quantity);
+  console.log(
+    `Processed PurchaseOrderApproved stream entry ${id} for PO ${poId} after creating inventory row: SKU ${sku} at ${targetLocation} by +${quantity}`,
+  );
+}
+
 async function pollStream() {
-  while (true) {
+  while (running) {
     try {
       const results = (await client.xreadgroup(
         "GROUP",
@@ -52,29 +94,30 @@ async function pollStream() {
               const rawData =
                 dataIndex !== -1 ? fields[dataIndex + 1] : undefined;
 
-              if (rawData !== undefined) {
-                const parsedData = JSON.parse(rawData);
-                const { id: poId, sku, quantity, locationId } = parsedData;
-                const targetLocation = locationId || "MAIN_WAREHOUSE";
-
-                await inventoryRepo.incrementOnOrder(
-                  sku,
-                  targetLocation,
-                  quantity,
-                );
-                console.log(
-                  `Processed PurchaseOrderApproved stream entry ${id} for PO ${poId}: SKU ${sku} at ${targetLocation} by +${quantity}`,
-                );
-              } else {
+              if (rawData === undefined) {
                 console.error(
-                  `Stream entry ${id} is missing a "data" field, skipping`,
+                  `Stream entry ${id} is missing a "data" field, skipping (poison message — acking to avoid infinite retry)`,
                 );
+                await client.xack(STREAM_NAME, CONSUMER_GROUP, id);
+                continue;
               }
+
+              const parsedData = JSON.parse(rawData);
+              const { id: poId, sku, quantity, locationId } = parsedData;
+              const targetLocation = locationId || "MAIN_WAREHOUSE";
+
+              await handlePurchaseOrderApproved(
+                id,
+                poId,
+                sku,
+                quantity,
+                targetLocation,
+              );
 
               await client.xack(STREAM_NAME, CONSUMER_GROUP, id);
             } catch (innerErr) {
               console.error(
-                `Error processing stream message entry ${id}:`,
+                `Error processing stream message entry ${id}, leaving unacked for retry:`,
                 innerErr,
               );
             }

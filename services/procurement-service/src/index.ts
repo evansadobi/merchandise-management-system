@@ -1,40 +1,24 @@
-import express, {
-  type Request,
-  type Response,
-  type NextFunction,
-} from "express";
 import dotenv from "dotenv";
-import { procurementRoutes } from "./routes/procurementRoutes.js";
+import { createApp } from "./app.js";
 import { pool } from "./db/db.js";
 import { featureFlags } from "./config/featureFlags.js";
+import { stopEventPublisher } from "./events/eventPublisher.js";
 
 dotenv.config();
 
-const app = express();
-app.use(express.json());
-
-app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({ status: "ok", service: "procurement-service" });
-});
-
-if (featureFlags.procurement) {
-  app.use("/api/purchase-orders", procurementRoutes);
-} else {
-  app.use("/api/purchase-orders", (_req: Request, res: Response) => {
-    res.status(503).json({ error: "Procurement module is currently disabled" });
-  });
+if (!featureFlags.procurement) {
   console.log("Procurement module is DISABLED via feature flag.");
 }
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
-
+const app = createApp();
 const PORT = Number(process.env.PORT) || 3002;
 
 const server = app.listen(PORT, () => {
   console.log(`Procurement Service running on port ${PORT}`);
+});
+
+server.on("error", (err) => {
+  console.error("SERVER ERROR:", err);
 });
 
 async function shutdown(signal: string) {
@@ -42,7 +26,8 @@ async function shutdown(signal: string) {
   server.close(async () => {
     try {
       await pool.end();
-      console.log("Database pool closed.");
+      await stopEventPublisher();
+      console.log("Database pool and Redis connection closed.");
       process.exit(0);
     } catch (err) {
       console.error("Error during shutdown:", err);

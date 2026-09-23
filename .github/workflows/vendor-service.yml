@@ -1,0 +1,57 @@
+name: Vendor Service CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/vendor-service/**"
+      - ".github/workflows/vendor-service.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "services/vendor-service/**"
+      - ".github/workflows/vendor-service.yml"
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test --workspace=services/vendor-service
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: vendor_db
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vendor_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:password@localhost:5435/vendor_db
+      FEATURE_VENDOR_MANAGEMENT: "true"
+      PORT: "3001"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run test:integration --workspace=services/vendor-service

@@ -2,15 +2,18 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "./schema.js";
 import * as dotenv from "dotenv";
+import { z } from "zod";
 
 dotenv.config();
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is not set");
-}
+const envSchema = z.object({
+  DATABASE_URL: z.string().url({ message: "DATABASE_URL must be a valid URL" }),
+});
+
+const env = envSchema.parse(process.env);
 
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: env.DATABASE_URL,
 });
 
 pool.on("error", (err) => {
