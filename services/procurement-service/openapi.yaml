@@ -1,0 +1,246 @@
+openapi: 3.0.3
+info:
+  title: Procurement Service API
+  version: 1.0.0
+  description: >
+    Manages the lifecycle of Purchase Orders (POs): capturing intent to buy,
+    locking in unit cost and payment terms at creation time from Vendor
+    Service's authoritative data, enforcing the approval workflow, and
+    tracking receipt of goods against open POs. Does not track the physical
+    arrival of goods in detail (see Receiving) or warehouse stock levels
+    (see Inventory).
+
+components:
+  schemas:
+    PurchaseOrder:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        vendorId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantityOrdered:
+          type: integer
+        quantityReceived:
+          type: integer
+        unitCost:
+          type: string
+          description: Decimal amount as a string. Locked in from Vendor Service at PO creation time — never accepted from the client.
+          example: "12.50"
+        paymentTerms:
+          type: string
+          example: "Net 30"
+        status:
+          type: string
+          enum: [DRAFT, APPROVED, PARTIALLY_RECEIVED, RECEIVED]
+        approvedBy:
+          type: string
+          nullable: true
+        approvedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      properties:
+        error:
+          oneOf:
+            - type: string
+            - type: object
+              description: Zod validation error detail object for 400 responses.
+
+  parameters:
+    PurchaseOrderIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+paths:
+  /api/purchase-orders:
+    get:
+      summary: List all purchase orders
+      responses:
+        "200":
+          description: A list of purchase orders.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PurchaseOrder"
+    post:
+      summary: Create a new purchase order
+      description: >
+        Validates that the given vendor is an APPROVED supplier for the given
+        SKU by calling Vendor Service's supplier lookup. If valid, locks in
+        the unit cost and payment terms from that response and creates the
+        PO with status DRAFT. The client cannot supply or override cost —
+        only vendorId, sku, and quantity are accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vendorId, sku, quantity]
+              properties:
+                vendorId:
+                  type: string
+                  format: uuid
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        "201":
+          description: Purchase order created with status DRAFT.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+        "400":
+          description: Invalid input, or the vendor is not an approved supplier for this SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Vendor Service is unreachable or returned an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/purchase-orders/{id}:
+    get:
+      summary: Get a purchase order by ID
+      parameters:
+        - $ref: "#/components/parameters/PurchaseOrderIdParam"
+      responses:
+        "200":
+          description: Purchase order found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+        "400":
+          description: Invalid purchase order ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Purchase order not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/purchase-orders/{id}/approve:
+    patch:
+      summary: Approve a draft purchase order
+      description: >
+        Transitions a PO from DRAFT to APPROVED. Requires the PO to currently
+        be in DRAFT status. On success, publishes a PurchaseOrderApproved
+        event to the event bus for downstream consumers (Receiving,
+        Financials, Inventory).
+      parameters:
+        - $ref: "#/components/parameters/PurchaseOrderIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approvedBy]
+              properties:
+                approvedBy:
+                  type: string
+      responses:
+        "200":
+          description: Purchase order approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+        "400":
+          description: Invalid purchase order ID or missing approvedBy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Purchase order not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Purchase order is not in DRAFT status (already approved, or in another state).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/purchase-orders/{id}/receive:
+    patch:
+      summary: Record receipt of goods against a purchase order
+      description: >
+        Increments the PO's received quantity. Requires the PO to be
+        APPROVED or PARTIALLY_RECEIVED. Automatically transitions status to
+        PARTIALLY_RECEIVED or RECEIVED depending on whether the full ordered
+        quantity has now been received. Rejects any request that would
+        exceed the remaining open quantity.
+      parameters:
+        - $ref: "#/components/parameters/PurchaseOrderIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantityReceived]
+              properties:
+                quantityReceived:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: Receipt recorded; status updated to PARTIALLY_RECEIVED or RECEIVED.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+        "400":
+          description: Invalid input, or quantityReceived exceeds the remaining open quantity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Purchase order not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Purchase order is not in a receivable status (e.g. still DRAFT).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"

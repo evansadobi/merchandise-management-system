@@ -1,0 +1,68 @@
+name: Procurement Service CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/procurement-service/**"
+      - ".github/workflows/procurement-service.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "services/procurement-service/**"
+      - ".github/workflows/procurement-service.yml"
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm test --workspace=services/procurement-service
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: procurement_db
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d procurement_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:password@localhost:5433/procurement_db
+      REDIS_URL: redis://localhost:6379
+      FEATURE_PROCUREMENT: "true"
+      VENDOR_SERVICE_URL: "http://localhost:3001"
+      PORT: "3002"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run test:integration --workspace=services/procurement-service

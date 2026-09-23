@@ -1,0 +1,432 @@
+openapi: 3.0.3
+info:
+  title: Inventory Service API
+  version: 1.0.0
+  description: >
+    Single source of truth for stock levels, per-location tracking, and
+    valuation. Tracks On Hand, Allocated, and On Order quantities distinctly;
+    "Available" is always computed as (quantityOnHand - quantityAllocated),
+    never stored. Does not decide warehouse placement (see Warehouse
+    Operations) and does not process sales directly (see Retail Sales) —
+    it exposes reservation and sale-commit endpoints that those services
+    call synchronously, and consumes PurchaseOrderApproved events from
+    Procurement to track incoming stock.
+
+components:
+  schemas:
+    InventoryItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        productName:
+          type: string
+        sku:
+          type: string
+        locationId:
+          type: string
+          example: "MAIN_WAREHOUSE"
+        quantityOnHand:
+          type: integer
+        quantityAllocated:
+          type: integer
+          description: Reserved for a pending sale — not itself "available"; available is computed as (quantityOnHand - quantityAllocated).
+        quantityOnOrder:
+          type: integer
+          description: Ordered from a supplier (PO approved) but not yet physically received.
+        unitValue:
+          type: string
+          example: "1.25"
+        reorderLevel:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        totalPages:
+          type: integer
+          example: 3
+
+    InventoryListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/InventoryItem"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    Error:
+      type: object
+      properties:
+        error:
+          oneOf:
+            - type: string
+            - type: object
+              description: Zod validation error detail object for 400 responses.
+
+  parameters:
+    InventoryIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SkuParam:
+      name: sku
+      in: path
+      required: true
+      schema:
+        type: string
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 20
+
+paths:
+  /api/inventory:
+    get:
+      summary: Retrieve all inventory items across all locations (paginated)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: A paginated list of inventory stock records.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryListResponse"
+    post:
+      summary: Create an inventory item record for a SKU at a location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productName, sku]
+              properties:
+                productName:
+                  type: string
+                sku:
+                  type: string
+                locationId:
+                  type: string
+                  description: Defaults to MAIN_WAREHOUSE if omitted.
+                quantityOnHand:
+                  type: integer
+                  minimum: 0
+                unitValue:
+                  type: string
+                  description: Decimal amount as a string, up to 2 decimal places.
+                reorderLevel:
+                  type: integer
+                  minimum: 0
+      responses:
+        "201":
+          description: Inventory item created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: Missing or invalid fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: An inventory item with this SKU already exists at this location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/inventory/low-stock:
+    get:
+      summary: Retrieve items at or below their reorder threshold
+      description: Backs the StockLow event requirement — items where quantityOnHand <= reorderLevel. An empty list is a normal, valid response.
+      responses:
+        "200":
+          description: List of low-stock items (may be empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InventoryItem"
+
+  /api/inventory/{id}:
+    get:
+      summary: Get a single inventory item by its internal ID
+      parameters:
+        - $ref: "#/components/parameters/InventoryIdParam"
+      responses:
+        "200":
+          description: Inventory item found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: Invalid inventory item ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Inventory item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Delete an inventory item record
+      parameters:
+        - $ref: "#/components/parameters/InventoryIdParam"
+      responses:
+        "200":
+          description: Inventory item deleted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: Invalid inventory item ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Inventory item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/inventory/sku/{sku}:
+    get:
+      summary: Get every location row for a given SKU
+      description: A product can exist at multiple locations simultaneously (e.g. main warehouse and a store backroom) — this returns all of them, not a single flattened total.
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      responses:
+        "200":
+          description: List of location rows for this SKU.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: SKU is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No inventory record found for this SKU at any location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/inventory/sku/{sku}/adjust:
+    patch:
+      summary: Adjust On Hand stock by a signed delta at a specific location
+      description: >
+        For manual/admin stock adjustments (corrections, write-offs, stock
+        takes). The write is atomic at the database level — it cannot take
+        On Hand below zero even under concurrent requests. Triggers a
+        StockLow event if the resulting quantity is at or below the
+        reorder level.
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delta]
+              properties:
+                delta:
+                  type: integer
+                  description: Positive to increase, negative to decrease. Cannot be zero.
+                locationId:
+                  type: string
+                  description: Defaults to MAIN_WAREHOUSE if omitted.
+      responses:
+        "200":
+          description: Stock adjusted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: Delta is zero/invalid, or would reduce On Hand below zero.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Item not found at this location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/inventory/sku/{sku}/reserve:
+    patch:
+      summary: Reserve (allocate) stock ahead of a pending sale
+      description: >
+        Called synchronously by Retail Sales during checkout, before payment
+        completes, so no other channel can sell the same physical stock.
+        Atomic at the database level — cannot allocate more than is
+        currently on hand, even under concurrent reservation requests for
+        the same low-stock item.
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+                locationId:
+                  type: string
+                  description: Defaults to MAIN_WAREHOUSE if omitted.
+      responses:
+        "200":
+          description: Stock reserved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: Invalid quantity, or insufficient available stock to reserve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Item not found at this location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/inventory/sku/{sku}/release:
+    patch:
+      summary: Release a stock reservation without completing the sale
+      description: Used when a checkout is abandoned or payment fails after stock was reserved.
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+                locationId:
+                  type: string
+                  description: Defaults to MAIN_WAREHOUSE if omitted.
+      responses:
+        "200":
+          description: Reservation released successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "404":
+          description: Item not found at this location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/inventory/sku/{sku}/commit-sale:
+    patch:
+      summary: Commit a completed sale, permanently deducting reserved stock
+      description: >
+        Called by Retail Sales once payment succeeds. Atomically deducts
+        the sold quantity from On Hand and releases the same quantity from
+        Allocated in a single database operation. Triggers a StockLow
+        event if the resulting On Hand is at or below the reorder level.
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+                locationId:
+                  type: string
+                  description: Defaults to MAIN_WAREHOUSE if omitted.
+      responses:
+        "200":
+          description: Sale committed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+        "400":
+          description: Insufficient On Hand quantity to commit the sale.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Item not found at this location.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
