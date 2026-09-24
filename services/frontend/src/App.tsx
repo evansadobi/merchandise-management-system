@@ -23,7 +23,7 @@ export default function App() {
         </div>
 
         <nav className="flex-1 p-4 space-y-1">
-          <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Phase 1 (Foundation)</p>
+          <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2"></p>
           
           <button
             onClick={() => setActiveTab('vendors')}
@@ -59,19 +59,19 @@ export default function App() {
               onClick={() => handleSelectComingSoon('Warehouse Receiving & Operations')}
               className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
             >
-              🚚 Receiving & Warehouse (Phase 2)
+              🚚 Receiving & Warehouse 
             </button>
             <button
               onClick={() => handleSelectComingSoon('Retail Sales & POS / Sales Audit')}
               className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
             >
-              🛍️ Retail POS & Audit (Phase 3)
+              🛍️ Retail POS & Audit 
             </button>
             <button
               onClick={() => handleSelectComingSoon('Financials & Ledger')}
               className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
             >
-              💰 Financials & Accounting (Phase 4)
+              💰 Financials & Accounting 
             </button>
           </div>
         </nav>
