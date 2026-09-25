@@ -38,8 +38,6 @@ export class ProcurementService {
       );
     }
 
-    // Cost and payment terms are locked in HERE, at creation time, from
-    // Vendor Service's authoritative data — never trusted from the client.
     return await this.procurementRepo.create({
       vendorId: data.vendorId,
       sku: data.sku,
@@ -62,7 +60,6 @@ export class ProcurementService {
 
     const approved = await this.procurementRepo.approve(id, approvedBy);
     if (!approved) {
-      // Someone else approved it between our check and the write.
       throw new ConflictError(
         "Purchase order was already approved by another request",
       );
@@ -72,6 +69,7 @@ export class ProcurementService {
       id: approved.id,
       sku: approved.sku,
       quantity: approved.quantityOrdered,
+      vendorId: approved.vendorId,
     });
 
     return approved;
@@ -104,7 +102,6 @@ export class ProcurementService {
       quantityReceived,
     );
     if (!updated) {
-      // Quantity or status changed concurrently since our check above.
       throw new ConflictError(
         "Purchase order state changed concurrently; please retry",
       );

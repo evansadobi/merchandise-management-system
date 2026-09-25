@@ -2,7 +2,7 @@ import RedisModule from "ioredis";
 
 const Redis = RedisModule.default ?? RedisModule;
 
-const STREAM_NAME = "procurement.events";
+const STREAM_NAME = "receiving.events";
 
 const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
@@ -15,17 +15,17 @@ redis.on("error", (err: unknown) => {
   console.error("Redis publisher connection error:", err);
 });
 
-export async function publishPurchaseOrderApproved(po: {
-  id: string;
+export async function publishGoodsReceived(item: {
+  grnId: string;
+  purchaseOrderId: string;
   sku: string;
   quantity: number;
-  vendorId: string;
   locationId?: string;
 }) {
   const payload = {
-    event: "PurchaseOrderApproved",
+    event: "GoodsReceived",
     timestamp: new Date().toISOString(),
-    data: JSON.stringify(po),
+    data: JSON.stringify(item),
   };
 
   try {
@@ -39,13 +39,12 @@ export async function publishPurchaseOrderApproved(po: {
       "data",
       payload.data,
     );
-
     console.log(
-      `Published PurchaseOrderApproved event for PO ${po.id} (stream entry ${entryId})`,
+      `Published GoodsReceived event for SKU ${item.sku} (GRN ${item.grnId}, stream entry ${entryId})`,
     );
   } catch (error) {
     console.error(
-      `Failed to publish PurchaseOrderApproved event for PO ${po.id}:`,
+      `Failed to publish GoodsReceived event for SKU ${item.sku}:`,
       error,
     );
   }

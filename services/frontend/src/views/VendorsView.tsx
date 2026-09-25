@@ -20,6 +20,7 @@ export default function VendorsView() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     name: '',
@@ -111,6 +112,18 @@ export default function VendorsView() {
       loadVendors();
     } catch (err: any) {
       setActionError(err.message);
+    }
+  };
+
+  const handleCopyId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1500);
+    } catch {
+      // Clipboard API can fail (e.g. non-HTTPS context in some browsers) —
+      // fall back to a visible alert so the ID is still usable.
+      alert(`Vendor ID: ${id}`);
     }
   };
 
@@ -211,13 +224,14 @@ export default function VendorsView() {
                 <th className="p-4">Payment Terms</th>
                 <th className="p-4">Lead Time</th>
                 <th className="p-4">Status</th>
+                <th className="p-4">ID</th>
                 <th className="p-4">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-sm text-slate-700">
               {vendors.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-6 text-center text-slate-400">No vendors found in the database.</td>
+                  <td colSpan={7} className="p-6 text-center text-slate-400">No vendors found in the database.</td>
                 </tr>
               ) : (
                 vendors.map((vendor) => (
@@ -238,6 +252,15 @@ export default function VendorsView() {
                       }`}>
                         {vendor.status}
                       </span>
+                    </td>
+                    <td className="p-4">
+                      <button
+                        onClick={() => handleCopyId(vendor.id)}
+                        title={vendor.id}
+                        className="font-mono text-xs text-indigo-600 hover:underline"
+                      >
+                        {copiedId === vendor.id ? 'Copied!' : `${vendor.id.slice(0, 8)}…`}
+                      </button>
                     </td>
                     <td className="p-4 space-x-2">
                       {vendor.status !== 'APPROVED' && (
