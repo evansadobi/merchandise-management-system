@@ -16,6 +16,12 @@ const createInventorySchema = z.object({
     )
     .optional(),
   reorderLevel: z.number().int().nonnegative().optional(),
+  weightKg: z
+    .string()
+    .regex(/^\d+(\.\d{1,3})?$/, "weightKg must be a valid decimal amount")
+    .optional(),
+  volumeCm3: z.number().int().nonnegative().optional(),
+  salesVelocity: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
 });
 
 const adjustStockSchema = z.object({
@@ -29,6 +35,23 @@ const adjustStockSchema = z.object({
 const reserveStockSchema = z.object({
   quantity: z.number().int().positive("quantity must be a positive integer"),
   locationId: z.string().min(1).optional(),
+});
+
+const updateAttributesSchema = z.object({
+  weightKg: z
+    .string()
+    .regex(/^\d+(\.\d{1,3})?$/, "weightKg must be a valid decimal amount")
+    .optional(),
+  volumeCm3: z.number().int().nonnegative().optional(),
+  salesVelocity: z.enum(["HIGH", "MEDIUM", "LOW"]).optional(),
+  locationId: z.string().min(1).optional(),
+});
+
+const transferStockSchema = z.object({
+  sku: z.string().min(1, "sku is required"),
+  fromLocationId: z.string().min(1, "fromLocationId is required"),
+  toLocationId: z.string().min(1, "toLocationId is required"),
+  quantity: z.number().int().positive("quantity must be a positive integer"),
 });
 
 const skuParamSchema = z.string().min(1, "SKU is required");
@@ -89,6 +112,32 @@ export const validateReserveStock = (
   next: NextFunction,
 ) => {
   const result = reserveStockSchema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error.format() });
+  }
+  req.body = result.data;
+  next();
+};
+
+export const validateUpdateAttributes = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const result = updateAttributesSchema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error.format() });
+  }
+  req.body = result.data;
+  next();
+};
+
+export const validateTransferStock = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const result = transferStockSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json({ error: result.error.format() });
   }

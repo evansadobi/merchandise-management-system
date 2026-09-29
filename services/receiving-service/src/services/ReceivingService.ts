@@ -1,7 +1,9 @@
 import { ReceivingRepository } from "../repositories/ReceivingRepository.js";
+import { ProcurementServiceClient } from "../clients/ProcurementServiceClient.js";
 import { publishGoodsReceived } from "../events/eventPublisher.js";
 import {
   NotFoundError,
+  ConflictError,
   ValidationError,
   type CreateGrnDTO,
   type DiscrepancyType,
@@ -11,12 +13,41 @@ import {
 export class ReceivingService {
   constructor(
     private receivingRepo: ReceivingRepository = new ReceivingRepository(),
+    private procurementClient: ProcurementServiceClient = new ProcurementServiceClient(),
   ) {}
 
   async createGoodsReceivedNote(dto: CreateGrnDTO) {
+    const po = await this.procurementClient.getPurchaseOrder(
+      dto.purchaseOrderId,
+    );
+
+    if (!po) {
+      throw new NotFoundError(
+        `Procurement has no record of purchase order ${dto.purchaseOrderId}.`,
+      );
+    }
+
+    if (po.status === "DRAFT") {
+      throw new ConflictError(
+        `Purchase order ${dto.purchaseOrderId} has not been approved yet — nothing should be arriving for it.`,
+      );
+    }
+
+    if (po.status === "RECEIVED") {
+      throw new ConflictError(
+        `Purchase order ${dto.purchaseOrderId} is already fully received — no further deliveries expected.`,
+      );
+    }
+
     const preparedItems: PreparedItem[] = [];
 
     for (const item of dto.items) {
+      if (item.sku !== po.sku) {
+        throw new ValidationError(
+          `SKU mismatch: PO ${dto.purchaseOrderId} is for SKU ${po.sku}, but received SKU was ${item.sku}`,
+        );
+      }
+
       const damagedQuantity = item.damagedQuantity ?? 0;
       const totalArrived = item.receivedQuantity;
 
@@ -26,22 +57,18 @@ export class ReceivingService {
         );
       }
 
-      const expected = await this.receivingRepo.findExpectedDelivery(
-        dto.purchaseOrderId,
-        item.sku,
+      const orderedQuantity = Math.max(
+        0,
+        po.quantityOrdered - po.quantityReceived,
       );
-
       const sellableQuantity = totalArrived - damagedQuantity;
-      const orderedQuantity = expected
-        ? expected.quantityExpected - expected.quantityReceivedSoFar
-        : 0;
 
       let discrepancyType: DiscrepancyType = "NONE";
       if (totalArrived < orderedQuantity) discrepancyType = "SHORTAGE";
       else if (totalArrived > orderedQuantity) discrepancyType = "OVERAGE";
 
       preparedItems.push({
-        expectedDeliveryId: expected?.id ?? null,
+        expectedDeliveryId: null,
         sku: item.sku,
         orderedQuantity,
         receivedQuantity: item.receivedQuantity,
@@ -52,25 +79,11 @@ export class ReceivingService {
       });
     }
 
-    if (preparedItems.every((i) => i.expectedDeliveryId === null)) {
-      throw new NotFoundError(
-        `No expected delivery on file for purchase order ${dto.purchaseOrderId}. Has it been approved in Procurement yet?`,
-      );
-    }
-
     const hasDiscrepancy = preparedItems.some(
       (i) => i.discrepancyType !== "NONE" || i.damagedQuantity > 0,
     );
 
-    const expectedUpdates = preparedItems
-      .filter(
-        (i): i is PreparedItem & { expectedDeliveryId: string } =>
-          i.expectedDeliveryId !== null,
-      )
-      .map((i) => ({
-        id: i.expectedDeliveryId,
-        additionalReceived: i.receivedQuantity,
-      }));
+    const expectedUpdates: { id: string; additionalReceived: number }[] = [];
 
     const { grn, items } = await this.receivingRepo.createGrnWithItems(
       {
@@ -85,6 +98,10 @@ export class ReceivingService {
       expectedUpdates,
     );
 
+    if (!grn) {
+      throw new Error("Failed to record Goods Received Note header");
+    }
+
     for (const item of preparedItems) {
       if (item.sellableQuantity > 0) {
         await publishGoodsReceived({
@@ -93,16 +110,25 @@ export class ReceivingService {
           sku: item.sku,
           quantity: item.sellableQuantity,
         });
+
+        await this.procurementClient.recordReceipt(
+          dto.purchaseOrderId,
+          item.sellableQuantity,
+        );
       }
     }
 
     return {
       ...grn,
-      items: items.map((dbItem, idx) => ({
-        ...dbItem,
-        discrepancyType: preparedItems[idx].discrepancyType,
-        sellableQuantity: preparedItems[idx].sellableQuantity,
-      })),
+      items: items.map((dbItem, idx) => {
+        const prepared = preparedItems[idx];
+        return {
+          ...dbItem,
+          discrepancyType: prepared?.discrepancyType ?? "NONE",
+          sellableQuantity:
+            prepared?.sellableQuantity ?? dbItem.receivedQuantity,
+        };
+      }),
     };
   }
 
@@ -111,17 +137,54 @@ export class ReceivingService {
     if (!result) {
       throw new NotFoundError("Goods Received Note not found");
     }
-    return { ...result.grn, items: result.items };
+
+    // Derive computed fields on read — discrepancyType and
+    // sellableQuantity are not stored in the DB, only computed.
+    return {
+      ...result.grn,
+      items: result.items.map((item) => ({
+        ...item,
+        sellableQuantity: item.receivedQuantity - item.damagedQuantity,
+        discrepancyType:
+          item.receivedQuantity < item.orderedQuantity
+            ? "SHORTAGE"
+            : item.receivedQuantity > item.orderedQuantity
+              ? "OVERAGE"
+              : "NONE",
+      })),
+    };
   }
 
   async listGrns(page = 1, limit = 20) {
-    const [data, total] = await Promise.all([
-      this.receivingRepo.findAllGrns(page, limit),
+    const [grns, total] = await Promise.all([
+      this.receivingRepo.findGrnsWithItems(page, limit),
       this.receivingRepo.countGrns(),
     ]);
+
+    // Hydrate the computed fields per line item — they are derived,
+    // not persisted, so we recompute them here from the stored columns.
+    const data = grns.map((grn) => ({
+      ...grn,
+      items: grn.items.map((item) => ({
+        ...item,
+        sellableQuantity: item.receivedQuantity - item.damagedQuantity,
+        discrepancyType:
+          item.receivedQuantity < item.orderedQuantity
+            ? "SHORTAGE"
+            : item.receivedQuantity > item.orderedQuantity
+              ? "OVERAGE"
+              : "NONE",
+      })),
+    }));
+
     return {
       data,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 

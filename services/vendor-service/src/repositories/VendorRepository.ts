@@ -33,6 +33,7 @@ export class VendorRepository {
     contactPhone: string;
     paymentTerms: string;
     leadTimeDays: number;
+    status?: VendorStatus;
   }) {
     const result = await db.insert(vendors).values(data).returning();
     return result[0];

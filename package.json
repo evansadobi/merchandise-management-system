@@ -6,7 +6,9 @@
     "services/vendor-service",
     "services/procurement-service",
     "services/inventory-service",
-        "services/receiving-service"
+        "services/receiving-service",
+       "services/warehouse-service"
+
 
   ],
   "scripts": {

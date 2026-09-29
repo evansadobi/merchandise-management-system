@@ -1,4 +1,4 @@
-import { InferSelectModel, InferInsertModel } from "drizzle-orm";
+import type { InferSelectModel, InferInsertModel } from "drizzle-orm";
 import {
   expectedDeliveries,
   goodsReceivedNotes,
@@ -33,13 +33,14 @@ export interface GoodsReceivedEventPayload {
   purchaseOrderId: string;
   sku: string;
   quantity: number;
+  locationId?: string | undefined;
 }
 
 export interface ReceivingItemInput {
   sku: string;
   receivedQuantity: number;
-  damagedQuantity?: number;
-  conditionNotes?: string;
+  damagedQuantity?: number | undefined;
+  conditionNotes?: string | undefined;
 }
 
 export interface CreateGrnDTO {
@@ -55,7 +56,7 @@ export interface PreparedItem {
   orderedQuantity: number;
   receivedQuantity: number;
   damagedQuantity: number;
-  conditionNotes?: string;
+  conditionNotes?: string | undefined;
   discrepancyType: DiscrepancyType;
   sellableQuantity: number;
 }

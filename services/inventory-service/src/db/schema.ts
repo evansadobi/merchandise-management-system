@@ -33,6 +33,12 @@ export const inventoryItems = pgTable(
 
     reorderLevel: integer("reorder_level").notNull().default(10),
 
+    weightKg: decimal("weight_kg", { precision: 10, scale: 3 }),
+
+    volumeCm3: integer("volume_cm3"),
+
+    salesVelocity: varchar("sales_velocity", { length: 20 }), // "HIGH" | "MEDIUM" | "LOW"
+
     createdAt: timestamp("created_at").defaultNow().notNull(),
 
     updatedAt: timestamp("updated_at")

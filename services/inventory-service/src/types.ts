@@ -33,6 +33,9 @@ export interface CreateInventoryDTO {
   quantityOnHand?: number;
   unitValue?: string;
   reorderLevel?: number;
+  weightKg?: string;
+  volumeCm3?: number;
+  salesVelocity?: "HIGH" | "MEDIUM" | "LOW";
 }
 
 export function computeAvailable(

@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "../db/db.js";
 import {
   goodsReceivedNotes,
@@ -35,11 +35,6 @@ export class ReceivingRepository {
     return await db.select().from(expectedDeliveries);
   }
 
-  /**
-   * Idempotent via ON CONFLICT DO NOTHING on (purchaseOrderId, sku) — safe
-   * to call again if a PurchaseOrderApproved event is redelivered after a
-   * prior attempt didn't get far enough to ack.
-   */
   async createExpectedDelivery(data: NewExpectedDelivery): Promise<void> {
     await db
       .insert(expectedDeliveries)
@@ -49,18 +44,6 @@ export class ReceivingRepository {
       });
   }
 
-  /**
-   * Creates the GRN header, its line items, and updates each referenced
-   * expectedDeliveries row's progress — all in one transaction, so a GRN
-   * is never recorded without its corresponding expected-delivery update
-   * (or vice versa) surviving a partial failure.
-   *
-   * isFullyReceived is NOT accepted from the caller — it's computed here,
-   * atomically, against the live DB row's current quantityReceivedSoFar,
-   * cast explicitly to the enum type (same fix pattern used in
-   * procurement-service and inventory-service for this exact class of
-   * "column is of type X but expression is of type text" error).
-   */
   async createGrnWithItems(
     grnData: NewGoodsReceivedNote,
     itemsData: Array<Omit<NewReceivingItem, "grnId">>,
@@ -72,10 +55,15 @@ export class ReceivingRepository {
         .values(grnData)
         .returning();
 
+      if (!grn) {
+        throw new Error("Failed to insert Goods Received Note header");
+      }
+
       const itemsToInsert = itemsData.map((item) => ({
         ...item,
         grnId: grn.id,
       }));
+
       const insertedItems = await tx
         .insert(receivingItems)
         .values(itemsToInsert)
@@ -122,6 +110,45 @@ export class ReceivingRepository {
       .from(goodsReceivedNotes)
       .limit(limit)
       .offset(offset);
+  }
+
+  /**
+   * Fetch a page of GRNs WITH their line items hydrated.
+   * Uses two queries total — one for the GRN headers, one for all
+   * items across those headers — rather than N+1 per-GRN queries.
+   */
+  async findGrnsWithItems(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+
+    const grnRows = await db
+      .select()
+      .from(goodsReceivedNotes)
+      .limit(limit)
+      .offset(offset);
+
+    if (grnRows.length === 0) {
+      return [];
+    }
+
+    const grnIds = grnRows.map((g) => g.id);
+
+    const itemRows = await db
+      .select()
+      .from(receivingItems)
+      .where(inArray(receivingItems.grnId, grnIds));
+
+    // Group items by their parent GRN id
+    const itemsByGrn = new Map<string, typeof itemRows>();
+    for (const item of itemRows) {
+      const list = itemsByGrn.get(item.grnId) ?? [];
+      list.push(item);
+      itemsByGrn.set(item.grnId, list);
+    }
+
+    return grnRows.map((grn) => ({
+      ...grn,
+      items: itemsByGrn.get(grn.id) ?? [],
+    }));
   }
 
   async countGrns() {

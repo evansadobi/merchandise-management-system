@@ -1,0 +1,1126 @@
+openapi: 3.0.3
+info:
+  title: Warehouse Operations Service API
+  version: 1.0.0
+  license:
+    name: Proprietary
+  description: >
+    The spatial brain of the warehouse. Owns the physical geography of
+    storage — zones, aisles, shelves, and bins — and the movement of stock
+    within and between locations. Answers: "Where do we put this, where do
+    we find it, and how does it get there?"
+
+    Consumes GoodsReceived events from Receiving to create putaway tasks
+    (directing dock workers where to place newly received stock). Directs
+    picking for stock transfers. Tracks bin capacity and utilization.
+
+    Does NOT track how much stock exists overall (see Inventory — this
+    service reads SKU attributes from Inventory to decide slotting, and
+    calls Inventory synchronously when transferring stock between
+    locations, but never stores quantity-on-hand itself outside of its
+    own bin placements).
+
+servers:
+  - url: http://localhost:3005
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Zones
+    description: Physical zone hierarchy — top level (FAST, MID, BULK)
+  - name: Aisles
+    description: Aisle definitions within zones
+  - name: Shelves
+    description: Shelf definitions within aisles
+  - name: Bins
+    description: Individual storage bins and their capacity/utilization
+  - name: Putaway
+    description: Tasks that direct workers where to place received goods
+  - name: Picking
+    description: Tasks that direct workers where to retrieve goods
+  - name: Transfers
+    description: Stock movement between warehouses
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Placeholder for the capstone — no auth layer is implemented yet.
+        Declared here so the contract is complete and consumers know the
+        expected shape when authentication is added in a later phase.
+
+  schemas:
+    Zone:
+      type: object
+      required: [id, warehouseId, code, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        warehouseId:
+          type: string
+          example: "MAIN_WAREHOUSE"
+        code:
+          type: string
+          enum: [FAST, MID, BULK]
+          description: >
+            FAST = near shipping, for high-velocity SKUs.
+            MID = mid-distance, for medium-velocity SKUs.
+            BULK = deep storage, for low-velocity SKUs.
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    Aisle:
+      type: object
+      required: [id, zoneId, code, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        zoneId:
+          type: string
+          format: uuid
+        code:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    Shelf:
+      type: object
+      required: [id, aisleId, code, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        aisleId:
+          type: string
+          format: uuid
+        code:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    BinWithPath:
+      type: object
+      required:
+        - id
+        - shelfId
+        - binCode
+        - capacityUnits
+        - currentUtilization
+        - createdAt
+        - zoneCode
+        - aisleCode
+        - shelfCode
+        - warehouseId
+      properties:
+        id:
+          type: string
+          format: uuid
+        shelfId:
+          type: string
+          format: uuid
+        binCode:
+          type: string
+          example: "FAST-A-01-03"
+        capacityUnits:
+          type: integer
+          minimum: 1
+        currentUtilization:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        zoneCode:
+          type: string
+          enum: [FAST, MID, BULK]
+        aisleCode:
+          type: string
+        shelfCode:
+          type: string
+        warehouseId:
+          type: string
+
+    BinUtilizationReport:
+      type: object
+      required:
+        - warehouseId
+        - totalBins
+        - totalCapacity
+        - totalUtilization
+        - utilizationPct
+        - byZone
+      properties:
+        warehouseId:
+          type: string
+        totalBins:
+          type: integer
+        totalCapacity:
+          type: integer
+        totalUtilization:
+          type: integer
+        utilizationPct:
+          type: number
+          format: float
+          description: utilization / capacity * 100, rounded to 2 decimals.
+        byZone:
+          type: array
+          items:
+            type: object
+            required: [zoneCode, bins, capacity, utilization]
+            properties:
+              zoneCode:
+                type: string
+              bins:
+                type: integer
+              capacity:
+                type: integer
+              utilization:
+                type: integer
+
+    TaskStatus:
+      type: string
+      enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELLED]
+
+    PutawayTask:
+      type: object
+      required:
+        - id
+        - grnId
+        - purchaseOrderId
+        - sku
+        - quantity
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        grnId:
+          type: string
+          format: uuid
+        purchaseOrderId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        suggestedBinId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null when no bin had capacity at task creation time.
+        suggestedBinCode:
+          type: string
+          nullable: true
+          description: Denormalized for the worker's handheld display.
+        suggestedZoneCode:
+          type: string
+          nullable: true
+          enum: [FAST, MID, BULK]
+        actualBinId:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        assignedTo:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    PickingTask:
+      type: object
+      required:
+        - id
+        - referenceId
+        - sku
+        - quantity
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        referenceId:
+          type: string
+          format: uuid
+          description: The transfer id that spawned this pick task.
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        fromBinId:
+          type: string
+          format: uuid
+          nullable: true
+        fromBinCode:
+          type: string
+          nullable: true
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        assignedTo:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    TransferStatus:
+      type: string
+      enum: [PENDING, IN_TRANSIT, COMPLETED, CANCELLED]
+
+    StockTransferItem:
+      type: object
+      required: [id, transferId, sku, quantity]
+      properties:
+        id:
+          type: string
+          format: uuid
+        transferId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+
+    StockTransfer:
+      type: object
+      required:
+        - id
+        - fromWarehouseId
+        - toWarehouseId
+        - status
+        - createdAt
+        - items
+      properties:
+        id:
+          type: string
+          format: uuid
+        fromWarehouseId:
+          type: string
+        toWarehouseId:
+          type: string
+        status:
+          $ref: "#/components/schemas/TransferStatus"
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StockTransferItem"
+
+    SuggestBinResponse:
+      type: object
+      required: [bin, zone, reason]
+      properties:
+        bin:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/BinWithPath"
+        zone:
+          type: string
+          enum: [FAST, MID, BULK]
+        reason:
+          type: string
+          description: Human-readable explanation of the choice.
+
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        errors:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+  parameters:
+    ZoneIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    BinIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TaskIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TransferIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+paths:
+  /api/zones:
+    get:
+      operationId: listZones
+      tags: [Zones]
+      summary: List all zones (optionally filtered by warehouse)
+      parameters:
+        - name: warehouseId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of zones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Zone"
+        "400":
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createZone
+      tags: [Zones]
+      summary: Create a zone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warehouseId, code]
+              properties:
+                warehouseId:
+                  type: string
+                  example: "MAIN_WAREHOUSE"
+                code:
+                  type: string
+                  enum: [FAST, MID, BULK]
+                description:
+                  type: string
+      responses:
+        "201":
+          description: Zone created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zone"
+        "400":
+          description: Invalid input.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A zone with this code already exists for this warehouse.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/zones/{id}/aisles:
+    get:
+      operationId: listAislesByZone
+      tags: [Aisles]
+      summary: List aisles belonging to a zone
+      parameters:
+        - $ref: "#/components/parameters/ZoneIdParam"
+      responses:
+        "200":
+          description: List of aisles.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Aisle"
+        "400":
+          description: Invalid zone ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Zone not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/aisles:
+    post:
+      operationId: createAisle
+      tags: [Aisles]
+      summary: Create an aisle within a zone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [zoneId, code]
+              properties:
+                zoneId:
+                  type: string
+                  format: uuid
+                code:
+                  type: string
+      responses:
+        "201":
+          description: Aisle created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aisle"
+        "400":
+          description: Invalid input.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Parent zone not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/shelves:
+    post:
+      operationId: createShelf
+      tags: [Shelves]
+      summary: Create a shelf within an aisle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [aisleId, code]
+              properties:
+                aisleId:
+                  type: string
+                  format: uuid
+                code:
+                  type: string
+      responses:
+        "201":
+          description: Shelf created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shelf"
+        "400":
+          description: Invalid input.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Parent aisle not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/bins:
+    post:
+      operationId: createBin
+      tags: [Bins]
+      summary: Create a bin within a shelf
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shelfId, binCode, capacityUnits]
+              properties:
+                shelfId:
+                  type: string
+                  format: uuid
+                binCode:
+                  type: string
+                  example: "03"
+                  description: >
+                    Short code within the shelf. The full path (FAST-A-01-03)
+                    is composed automatically from the hierarchy.
+                capacityUnits:
+                  type: integer
+                  minimum: 1
+      responses:
+        "201":
+          description: Bin created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BinWithPath"
+        "400":
+          description: Invalid input.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Parent shelf not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/bins/{id}:
+    get:
+      operationId: getBinById
+      tags: [Bins]
+      summary: Get a single bin with its full path context
+      parameters:
+        - $ref: "#/components/parameters/BinIdParam"
+      responses:
+        "200":
+          description: Bin found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BinWithPath"
+        "400":
+          description: Invalid bin ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Bin not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/bins/available:
+    get:
+      operationId: findAvailableBins
+      tags: [Bins]
+      summary: Find bins with enough remaining capacity
+      parameters:
+        - name: zone
+          in: query
+          schema:
+            type: string
+            enum: [FAST, MID, BULK]
+        - name: warehouseId
+          in: query
+          schema:
+            type: string
+        - name: minCapacity
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: List of candidate bins, ordered by binCode.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BinWithPath"
+        "400":
+          description: Missing or invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/bins/utilization:
+    get:
+      operationId: getBinUtilization
+      tags: [Bins]
+      summary: Utilization report for a warehouse
+      parameters:
+        - name: warehouseId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Utilization report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BinUtilizationReport"
+        "400":
+          description: Missing warehouseId.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/putaway/tasks:
+    get:
+      operationId: listPutawayTasks
+      tags: [Putaway]
+      summary: List putaway tasks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskStatus"
+        - name: assignedTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of putaway tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PutawayTask"
+        "400":
+          description: Invalid filter parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/putaway/tasks/{id}/start:
+    post:
+      operationId: startPutawayTask
+      tags: [Putaway]
+      summary: Mark a putaway task as in-progress (worker claimed it)
+      parameters:
+        - $ref: "#/components/parameters/TaskIdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assignedTo:
+                  type: string
+      responses:
+        "200":
+          description: Task started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PutawayTask"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Task is not in PENDING state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/putaway/tasks/{id}/complete:
+    post:
+      operationId: completePutawayTask
+      tags: [Putaway]
+      summary: Complete a putaway task, recording the actual bin used
+      parameters:
+        - $ref: "#/components/parameters/TaskIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actualBinId]
+              properties:
+                actualBinId:
+                  type: string
+                  format: uuid
+                  description: >
+                    The bin the worker actually used. May differ from
+                    suggestedBinId if the suggestion was overridden.
+      responses:
+        "200":
+          description: Task completed; stock placement recorded; bin utilization updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PutawayTask"
+        "400":
+          description: Invalid input or bin has insufficient remaining capacity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task or bin not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Task is already completed or cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/putaway/suggest:
+    post:
+      operationId: suggestBin
+      tags: [Putaway]
+      summary: Suggest a bin for a SKU/quantity, using velocity-based slotting
+      description: >
+        Reads salesVelocity from Inventory and maps it to a zone
+        (HIGH→FAST, MEDIUM→MID, LOW→BULK; null→MID). Finds the first bin
+        in that zone with enough remaining capacity, ordered by binCode.
+        Falls back to any zone with capacity if the target zone is full.
+        Returns 200 with bin=null if no bin anywhere has capacity —
+        this is not an error, just a signal that manual intervention is
+        needed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sku, quantity]
+              properties:
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                warehouseId:
+                  type: string
+                  description: Defaults to MAIN_WAREHOUSE if omitted.
+      responses:
+        "200":
+          description: Suggestion result. `bin` is null when no bin has capacity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestBinResponse"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: SKU not found in Inventory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Inventory service unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/picking/tasks:
+    get:
+      operationId: listPickingTasks
+      tags: [Picking]
+      summary: List picking tasks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskStatus"
+        - name: assignedTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of picking tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PickingTask"
+        "400":
+          description: Invalid filter parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/picking/tasks/{id}/start:
+    post:
+      operationId: startPickingTask
+      tags: [Picking]
+      summary: Mark a picking task as in-progress
+      parameters:
+        - $ref: "#/components/parameters/TaskIdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assignedTo:
+                  type: string
+      responses:
+        "200":
+          description: Task started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PickingTask"
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Task is not in PENDING state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/picking/tasks/{id}/complete:
+    post:
+      operationId: completePickingTask
+      tags: [Picking]
+      summary: Complete a picking task
+      parameters:
+        - $ref: "#/components/parameters/TaskIdParam"
+      responses:
+        "200":
+          description: Task completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PickingTask"
+        "404":
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Task is already completed or cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/transfers:
+    get:
+      operationId: listTransfers
+      tags: [Transfers]
+      summary: List transfers (optionally filtered)
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TransferStatus"
+      responses:
+        "200":
+          description: List of transfers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StockTransfer"
+        "400":
+          description: Invalid filter parameters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createTransfer
+      tags: [Transfers]
+      summary: Create a transfer between two warehouses
+      description: >
+        Creates the transfer record and its line items, and generates one
+        picking task per SKU. The transfer starts in PENDING. Stock is not
+        moved until the transfer is completed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromWarehouseId, toWarehouseId, items]
+              properties:
+                fromWarehouseId:
+                  type: string
+                toWarehouseId:
+                  type: string
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [sku, quantity]
+                    properties:
+                      sku:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1
+      responses:
+        "201":
+          description: Transfer created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockTransfer"
+        "400":
+          description: Invalid input, or from/to warehouses are the same.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/transfers/{id}:
+    get:
+      operationId: getTransferById
+      tags: [Transfers]
+      summary: Get a single transfer with its items
+      parameters:
+        - $ref: "#/components/parameters/TransferIdParam"
+      responses:
+        "200":
+          description: Transfer found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockTransfer"
+        "400":
+          description: Invalid transfer ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Transfer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/transfers/{id}/complete:
+    post:
+      operationId: completeTransfer
+      tags: [Transfers]
+      summary: Complete a transfer — moves stock in Inventory
+      description: >
+        Synchronously calls Inventory's atomic /api/inventory/transfer
+        endpoint for each line item. If any line fails, the whole transfer
+        is marked CANCELLED and no further lines are processed. On success,
+        the transfer moves to COMPLETED and all picking tasks for it are
+        closed.
+      parameters:
+        - $ref: "#/components/parameters/TransferIdParam"
+      responses:
+        "200":
+          description: Transfer completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockTransfer"
+        "400":
+          description: Transfer is not in PENDING state, or Inventory rejected the move (e.g. insufficient stock).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Transfer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Inventory service unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"

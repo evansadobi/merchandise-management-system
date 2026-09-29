@@ -1,0 +1,293 @@
+openapi: 3.0.3
+info:
+  title: Receiving Service API
+  version: 1.0.0
+  description: >
+    The validation point between intent and reality: matches physical goods
+    arriving at the dock against approved purchase orders, flags shortages,
+    overages, and damage, and produces a formal Goods Received Note (GRN).
+    Damaged units are excluded from the sellable quantity reported downstream
+    to Inventory — this is how damaged goods are routed into a quarantine
+    status rather than becoming sellable stock. Does not decide where to
+    store goods (see Warehouse Operations) and does not update the financial
+    books directly (see Financials).
+
+components:
+  schemas:
+    ExpectedDelivery:
+      type: object
+      description: >
+        A local read-model cache populated by consuming PurchaseOrderApproved
+        events from Procurement — not a copy of Procurement's database.
+        Represents one expected SKU on one purchase order.
+      properties:
+        id:
+          type: string
+          format: uuid
+        purchaseOrderId:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        quantityExpected:
+          type: integer
+        quantityReceivedSoFar:
+          type: integer
+        status:
+          type: string
+          enum: [PENDING, PARTIALLY_RECEIVED, FULLY_RECEIVED]
+        createdAt:
+          type: string
+          format: date-time
+
+    ReceivingItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        grnId:
+          type: string
+          format: uuid
+        expectedDeliveryId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for a genuinely unordered SKU (a true overage never on the original PO).
+        sku:
+          type: string
+        orderedQuantity:
+          type: integer
+          description: Remaining quantity expected for this SKU at the time of receiving. 0 means this SKU was never on the PO at all.
+        receivedQuantity:
+          type: integer
+          description: TOTAL physical units delivered — good condition and damaged combined.
+        damagedQuantity:
+          type: integer
+          description: Subset of receivedQuantity that arrived damaged. Excluded from the sellable quantity reported to Inventory.
+        sellableQuantity:
+          type: integer
+          description: Computed as receivedQuantity minus damagedQuantity — never stored, always derived. This is the quantity actually published to Inventory.
+        discrepancyType:
+          type: string
+          enum: [NONE, SHORTAGE, OVERAGE]
+          description: Computed by comparing receivedQuantity (the total) against orderedQuantity — not stored.
+        conditionNotes:
+          type: string
+          nullable: true
+
+    GoodsReceivedNote:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        purchaseOrderId:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        receivedBy:
+          type: string
+        status:
+          type: string
+          enum: [COMPLETE, DISCREPANCY]
+          description: DISCREPANCY if any line item had a shortage, overage, or any damaged quantity.
+        createdAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReceivingItem"
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+
+    GrnListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoodsReceivedNote"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    Error:
+      type: object
+      properties:
+        error:
+          oneOf:
+            - type: string
+            - type: object
+              description: Zod validation error detail object for 400 responses.
+
+  parameters:
+    GrnIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+paths:
+  /api/expected-deliveries:
+    get:
+      summary: List all expected deliveries
+      description: >
+        The local cache of "what we're expecting," built entirely from
+        consumed PurchaseOrderApproved events. Useful for dock staff to see
+        what's due before a truck arrives.
+      responses:
+        "200":
+          description: List of expected deliveries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ExpectedDelivery"
+
+  /api/grn:
+    get:
+      summary: List all Goods Received Notes (paginated)
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Paginated list of GRNs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrnListResponse"
+    post:
+      summary: Record a Goods Received Note for a physical delivery
+      description: >
+        Before recording anything, this synchronously calls Procurement to
+        confirm the purchase order genuinely exists and is in an open state
+        (APPROVED or PARTIALLY_RECEIVED) — mirroring the real-world exchange
+        "here is the delivery note, is there an open PO for these items?"
+        A PO still in DRAFT (never approved) or already fully RECEIVED is
+        rejected. For each line item, receivedQuantity is the TOTAL
+        physically delivered (good + damaged combined); damagedQuantity is
+        a subset of that total and is excluded from what gets published to
+        Inventory as sellable stock — this is the quarantine mechanism.
+        Shortage/overage is computed by comparing the total received against
+        the remaining expected quantity for that SKU.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purchaseOrderId, supplierId, receivedBy, items]
+              properties:
+                purchaseOrderId:
+                  type: string
+                  format: uuid
+                supplierId:
+                  type: string
+                  format: uuid
+                receivedBy:
+                  type: string
+                  description: Name or identifier of the dock worker recording this delivery.
+                items:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [sku, receivedQuantity]
+                    properties:
+                      sku:
+                        type: string
+                      receivedQuantity:
+                        type: integer
+                        minimum: 0
+                        description: TOTAL physical units delivered for this SKU (good + damaged combined).
+                      damagedQuantity:
+                        type: integer
+                        minimum: 0
+                        description: Subset of receivedQuantity that arrived damaged. Defaults to 0.
+                      conditionNotes:
+                        type: string
+                        maxLength: 500
+      responses:
+        "201":
+          description: GRN recorded successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoodsReceivedNote"
+        "400":
+          description: Invalid input, or damagedQuantity exceeds receivedQuantity for a line item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Procurement has no record of this purchase order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Purchase order is still DRAFT (not yet approved) or already fully RECEIVED.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Procurement Service is unreachable or returned an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/grn/{id}:
+    get:
+      summary: Get a single Goods Received Note by ID, including its line items
+      parameters:
+        - $ref: "#/components/parameters/GrnIdParam"
+      responses:
+        "200":
+          description: GRN found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoodsReceivedNote"
+        "400":
+          description: Invalid ID format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: GRN not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"

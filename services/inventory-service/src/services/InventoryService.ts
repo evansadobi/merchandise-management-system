@@ -156,6 +156,82 @@ export class InventoryService {
     return updated;
   }
 
+  async updateAttributes(
+    sku: string,
+    data: {
+      weightKg?: string;
+      volumeCm3?: number;
+      salesVelocity?: "HIGH" | "MEDIUM" | "LOW";
+    },
+    locationId?: string,
+  ) {
+    const resolvedLocationId = this.resolveLocation(locationId);
+
+    const updated = await this.inventoryRepo.updateAttributes(
+      sku,
+      resolvedLocationId,
+      data,
+    );
+
+    if (!updated) {
+      const existing = await this.inventoryRepo.findBySkuAndLocation(
+        sku,
+        resolvedLocationId,
+      );
+      if (!existing) {
+        throw new NotFoundError(
+          `Inventory item for SKU ${sku} not found at location ${resolvedLocationId}`,
+        );
+      }
+      throw new BadRequestError(
+        "At least one attribute must be provided to update",
+      );
+    }
+
+    return updated;
+  }
+
+  async transferStock(
+    sku: string,
+    fromLocationId: string,
+    toLocationId: string,
+    quantity: number,
+  ) {
+    const from = this.resolveLocation(fromLocationId);
+    const to = this.resolveLocation(toLocationId);
+
+    if (from === to) {
+      throw new BadRequestError(
+        `Source and destination locations must differ (both resolved to ${from})`,
+      );
+    }
+
+    const result = await this.inventoryRepo.transferStock(
+      sku,
+      from,
+      to,
+      quantity,
+    );
+
+    if (!result) {
+      // Disambiguate: does the source row exist at all?
+      const source = await this.inventoryRepo.findBySkuAndLocation(sku, from);
+      if (!source) {
+        throw new NotFoundError(
+          `Inventory item for SKU ${sku} not found at source location ${from}`,
+        );
+      }
+      throw new BadRequestError(
+        `Insufficient On Hand at ${from} to transfer ${quantity} of ${sku} (available: ${source.quantityOnHand})`,
+      );
+    }
+
+    await this.checkAndPublishLowStock(result.source);
+    await this.checkAndPublishLowStock(result.destination);
+
+    return result;
+  }
+
   async deleteItem(id: string) {
     const deleted = await this.inventoryRepo.delete(id);
     if (!deleted) {

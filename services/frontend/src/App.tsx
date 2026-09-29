@@ -1,88 +1,101 @@
-import { useState } from 'react';
+import { useState, type ComponentType, type ReactNode } from 'react';
+import {
+  Users,
+  ClipboardList,
+  Package,
+  Truck,
+  Warehouse,
+  ShoppingCart,
+  Landmark,
+} from 'lucide-react';
 import VendorsView from './views/VendorsView';
 import ProcurementView from './views/ProcurementView';
 import InventoryView from './views/InventoryView';
+import ReceivingView from './views/ReceivingView';
+import WarehouseView from './views/WarehouseView';
 import ComingSoonView from './views/ComingSoonView';
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState<'vendors' | 'procurement' | 'inventory' | 'coming-soon'>('vendors');
-  const [comingSoonTitle, setComingSoonTitle] = useState('');
+type Tab = 'vendors' | 'procurement' | 'inventory' | 'receiving' | 'warehouse' | 'coming-soon';
 
-  const handleSelectComingSoon = (title: string) => {
-    setComingSoonTitle(title);
-    setActiveTab('coming-soon');
-  };
+const live: { id: Exclude<Tab, 'coming-soon'>; label: string; Icon: ComponentType<{ className?: string }> }[] = [
+  { id: 'vendors', label: 'Vendors', Icon: Users },
+  { id: 'procurement', label: 'Procurement', Icon: ClipboardList },
+  { id: 'inventory', label: 'Inventory', Icon: Package },
+  { id: 'receiving', label: 'Receiving', Icon: Truck },
+  { id: 'warehouse', label: 'Warehouse', Icon: Warehouse },
+];
+
+const future: { title: string; label: string; Icon: ComponentType<{ className?: string }> }[] = [
+  { title: 'Retail Sales & POS / Sales Audit', label: 'Retail POS & Audit (Phase 3)', Icon: ShoppingCart },
+  { title: 'Financials & Ledger', label: 'Financials (Phase 4)', Icon: Landmark },
+];
+
+function NavButton(props: {
+  label: string;
+  active?: boolean;
+  muted?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={props.onClick}
+      aria-label={props.label}
+      className={`group relative flex h-10 w-10 items-center justify-center rounded-lg transition-colors ${
+        props.active
+          ? 'bg-indigo-600 text-white'
+          : props.muted
+            ? 'text-slate-600 hover:bg-slate-800 hover:text-slate-300'
+            : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+      }`}
+    >
+      {props.children}
+      <span className="pointer-events-none absolute left-12 z-50 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-xs text-white opacity-0 shadow-lg group-hover:opacity-100">
+        {props.label}
+      </span>
+    </button>
+  );
+}
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>('vendors');
+  const [comingSoon, setComingSoon] = useState('');
 
   return (
-    <div className="flex h-screen bg-gray-100 font-sans">
-      {/* Sidebar Navigation */}
-      <aside className="w-64 bg-slate-900 text-white flex flex-col shadow-lg">
-        <div className="p-6 border-b border-slate-800">
-          <h1 className="text-xl font-bold tracking-wider text-indigo-400">MMS Platform</h1>
-          <p className="text-xs text-slate-400 mt-1">Merchandising Management System</p>
+    <div className="flex h-screen bg-slate-50 font-sans">
+      <aside className="flex w-16 flex-col items-center gap-2 bg-slate-950 py-4">
+        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-500 text-lg font-bold text-white">
+          M
         </div>
-
-        <nav className="flex-1 p-4 space-y-1">
-          <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Phase 1 (Foundation)</p>
-          
-          <button
-            onClick={() => setActiveTab('vendors')}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeTab === 'vendors' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'
-            }`}
+        {live.map(({ id, label, Icon }) => (
+          <NavButton key={id} label={label} active={tab === id} onClick={() => setTab(id)}>
+            <Icon className="h-5 w-5" />
+          </NavButton>
+        ))}
+        <div className="my-2 h-px w-8 bg-slate-800" />
+        {future.map(({ title, label, Icon }) => (
+          <NavButton
+            key={title}
+            label={label}
+            muted
+            active={tab === 'coming-soon' && comingSoon === title}
+            onClick={() => {
+              setComingSoon(title);
+              setTab('coming-soon');
+            }}
           >
-            📦 Vendor Portal
-          </button>
-
-          <button
-            onClick={() => setActiveTab('procurement')}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeTab === 'procurement' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            📝 Procurement Dashboard
-          </button>
-
-          <button
-            onClick={() => setActiveTab('inventory')}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-              activeTab === 'inventory' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            📊 Inventory Control
-          </button>
-
-          <div className="pt-6">
-            <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Future Phases (Flags)</p>
-            
-            <button
-              onClick={() => handleSelectComingSoon('Warehouse Receiving & Operations')}
-              className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
-            >
-              🚚 Receiving & Warehouse (Phase 2)
-            </button>
-            <button
-              onClick={() => handleSelectComingSoon('Retail Sales & POS / Sales Audit')}
-              className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
-            >
-              🛍️ Retail POS & Audit (Phase 3)
-            </button>
-            <button
-              onClick={() => handleSelectComingSoon('Financials & Ledger')}
-              className="w-full flex items-center px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white"
-            >
-              💰 Financials & Accounting (Phase 4)
-            </button>
-          </div>
-        </nav>
+            <Icon className="h-5 w-5" />
+          </NavButton>
+        ))}
       </aside>
 
-      {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto p-8">
-        {activeTab === 'vendors' && <VendorsView />}
-        {activeTab === 'procurement' && <ProcurementView />}
-        {activeTab === 'inventory' && <InventoryView />}
-        {activeTab === 'coming-soon' && <ComingSoonView moduleName={comingSoonTitle} />}
+        {tab === 'vendors' && <VendorsView />}
+        {tab === 'procurement' && <ProcurementView />}
+        {tab === 'inventory' && <InventoryView />}
+        {tab === 'receiving' && <ReceivingView />}
+        {tab === 'warehouse' && <WarehouseView />}
+        {tab === 'coming-soon' && <ComingSoonView moduleName={comingSoon} />}
       </main>
     </div>
   );
