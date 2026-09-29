@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
@@ -14,6 +14,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
     "pg": "^8.23.0",
     "swagger-ui-express": "^5.0.1",
@@ -28,7 +29,6 @@
     "@types/swagger-ui-express": "^4.1.8",
     "@vitest/coverage-v8": "^4.1.11",
     "drizzle-kit": "^0.31.10",
-    "drizzle-orm": "^0.45.2",
     "supertest": "^7.2.2",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",

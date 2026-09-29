@@ -1,5 +1,5 @@
 import { VendorRepository } from "../repositories/VendorRepository.js";
-import { NotFoundError, type VendorStatus } from "../types.js";
+import { NotFoundError, VendorStatus } from "../types.js";
 
 export class VendorService {
   constructor(private vendorRepo: VendorRepository = new VendorRepository()) {}
@@ -36,7 +36,10 @@ export class VendorService {
     paymentTerms: string;
     leadTimeDays: number;
   }) {
-    return await this.vendorRepo.create(data);
+    return await this.vendorRepo.create({
+      ...data,
+      status: VendorStatus.PENDING,
+    });
   }
 
   async updateVendor(

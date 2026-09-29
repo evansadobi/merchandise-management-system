@@ -170,6 +170,98 @@ export class InventoryRepository {
     return result[0] ?? null;
   }
 
+  async updateAttributes(
+    sku: string,
+    locationId: string,
+    data: {
+      weightKg?: string;
+      volumeCm3?: number;
+      salesVelocity?: "HIGH" | "MEDIUM" | "LOW";
+    },
+  ) {
+    const updateData = Object.fromEntries(
+      Object.entries(data).filter(([, value]) => value !== undefined),
+    );
+
+    if (Object.keys(updateData).length === 0) {
+      return null;
+    }
+
+    const result = await db
+      .update(inventoryItems)
+      .set(updateData)
+      .where(
+        and(
+          eq(inventoryItems.sku, sku),
+          eq(inventoryItems.locationId, locationId),
+        ),
+      )
+      .returning();
+
+    return result[0] ?? null;
+  }
+
+  async transferStock(
+    sku: string,
+    fromLocationId: string,
+    toLocationId: string,
+    quantity: number,
+  ) {
+    if (fromLocationId === toLocationId) {
+      throw new Error("fromLocationId and toLocationId must differ");
+    }
+    if (quantity <= 0) {
+      throw new Error("quantity must be positive");
+    }
+
+    return await db.transaction(async (tx) => {
+      // 1. Decrement source — atomic guard against negative stock.
+      const sourceRows = await tx
+        .update(inventoryItems)
+        .set({
+          quantityOnHand: sql`${inventoryItems.quantityOnHand} - ${quantity}`,
+        })
+        .where(
+          and(
+            eq(inventoryItems.sku, sku),
+            eq(inventoryItems.locationId, fromLocationId),
+            sql`${inventoryItems.quantityOnHand} - ${quantity} >= 0`,
+          ),
+        )
+        .returning();
+
+      const source = sourceRows[0];
+      if (!source) {
+        return null;
+      }
+
+      const destinationRows = await tx
+        .insert(inventoryItems)
+        .values({
+          productName: source.productName,
+          sku,
+          locationId: toLocationId,
+          quantityOnHand: quantity,
+          unitValue: source.unitValue,
+          reorderLevel: source.reorderLevel,
+        })
+        .onConflictDoUpdate({
+          target: [inventoryItems.sku, inventoryItems.locationId],
+          set: {
+            quantityOnHand: sql`${inventoryItems.quantityOnHand} + ${quantity}`,
+          },
+        })
+        .returning();
+
+      const destination = destinationRows[0];
+      if (!destination) {
+        throw new Error("Destination upsert returned no row");
+      }
+
+      return { source, destination };
+    });
+  }
+
   async delete(id: string) {
     const result = await db
       .delete(inventoryItems)

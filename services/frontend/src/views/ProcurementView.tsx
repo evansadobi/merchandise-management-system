@@ -1,4 +1,8 @@
 import { useEffect, useState } from 'react';
+import { Copy, Check } from 'lucide-react';
+import DataTable, { type Column } from '../components/DataTable';
+import { Banner, Field, Modal, Pill, QuickInput, inputCls } from '../components/ui';
+import { api, runAll, summarize } from '../api';
 
 interface PurchaseOrder {
   id: string;
@@ -7,268 +11,404 @@ interface PurchaseOrder {
   quantityOrdered: number;
   quantityReceived: number;
   unitCost: string;
-  paymentTerms: string;
   status: 'DRAFT' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'RECEIVED';
   createdAt: string;
 }
 
-const API_BASE = 'http://localhost:3002';
+interface Vendor {
+  id: string;
+  name: string;
+  status: string;
+  paymentTerms: string;
+  leadTimeDays: number;
+}
+
+interface VendorProduct {
+  id: string;
+  vendorId: string;
+  sku: string;
+  unitCost: string;
+}
+
+const API = 'http://localhost:3002/api/purchase-orders';
+const VENDORS_API = 'http://localhost:3001/api/vendors';
+
+const tone = {
+  DRAFT: 'slate',
+  APPROVED: 'blue',
+  PARTIALLY_RECEIVED: 'yellow',
+  RECEIVED: 'green',
+} as const;
 
 export default function ProcurementView() {
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [vendorProducts, setVendorProducts] = useState<VendorProduct[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [approverName, setApproverName] = useState('Store Manager');
-  const [receiveQty, setReceiveQty] = useState<Record<string, string>>({});
-
+  const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ vendorId: '', sku: '', quantity: '' });
+  const [formError, setFormError] = useState<string | null>(null);
+  const [approveIds, setApproveIds] = useState<string[] | null>(null);
+  const [receiving, setReceiving] = useState<PurchaseOrder | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
-  const loadPOs = () => {
-    setLoading(true);
-    setError(null);
-    fetch(`${API_BASE}/api/purchase-orders`)
-      .then((res) => {
-        if (!res.ok) throw new Error('Failed to fetch purchase orders from backend');
-        return res.json();
-      })
-      .then((data) => {
-        setPos(data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        setError(err.message);
-        setLoading(false);
-      });
+  const load = async () => {
+    try {
+      setError(null);
+      setPos(await api<PurchaseOrder[]>(API));
+    } catch (e: any) {
+      setError(`${e.message} (Is procurement-service running?)`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadVendors = async () => {
+    try {
+      const body = await api<{ data: Vendor[] }>(`${VENDORS_API}?limit=100`);
+  
+      const approved = (body.data ?? []).filter((v) => v.status === 'APPROVED');
+      setVendors(approved);
+    } catch {
+      setVendors([]);
+    }
   };
 
   useEffect(() => {
-    loadPOs();
+    load();
+    loadVendors();
   }, []);
 
-  const handleCreate = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (!form.vendorId) {
+      setVendorProducts([]);
+      return;
+    }
+    setLoadingProducts(true);
+    api<VendorProduct[]>(`${VENDORS_API}/${form.vendorId}/products`)
+      .then((rows) => setVendorProducts(Array.isArray(rows) ? rows : []))
+      .catch(() => setVendorProducts([]))
+      .finally(() => setLoadingProducts(false));
+  }, [form.vendorId]);
+
+  const selectedVendor = vendors.find((v) => v.id === form.vendorId);
+  const selectedProduct = vendorProducts.find((p) => p.sku === form.sku);
+
+  const approve = async (approvedBy: string) => {
+    const drafts = (approveIds ?? []).filter(
+      (id) => pos.find((p) => p.id === id)?.status === 'DRAFT',
+    );
+    if (drafts.length === 0) {
+      setNotice({ kind: 'error', text: 'Only DRAFT purchase orders can be approved.' });
+      return;
+    }
+    const r = await runAll(drafts, (id) =>
+      api(`${API}/${id}/approve`, { method: 'PATCH', body: JSON.stringify({ approvedBy }) }),
+    );
+    setNotice(summarize(r, 'approved'));
+    await load();
+  };
+
+  const receive = async (qty: string) => {
+    if (!receiving) return;
+    try {
+      await api(`${API}/${receiving.id}/receive`, {
+        method: 'PATCH',
+        body: JSON.stringify({ quantityReceived: Number(qty) }),
+      });
+      setNotice({ kind: 'success', text: `Recorded receipt of ${qty} × ${receiving.sku}.` });
+    } catch (e: any) {
+      setNotice({ kind: 'error', text: e.message });
+    }
+    await load();
+  };
+
+  const create = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
-    setSubmitting(true);
+    if (!form.vendorId) {
+      setFormError('Pick a vendor first.');
+      return;
+    }
+    if (!form.sku) {
+      setFormError('Pick a SKU approved for this vendor.');
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/api/purchase-orders`, {
+      await api(API, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           vendorId: form.vendorId,
           sku: form.sku,
           quantity: Number(form.quantity),
         }),
       });
-      const body = await res.json();
-      if (!res.ok) {
-        throw new Error(typeof body.error === 'string' ? body.error : JSON.stringify(body.error));
-      }
       setForm({ vendorId: '', sku: '', quantity: '' });
-      setShowForm(false);
-      loadPOs();
+      setShowCreate(false);
+      setNotice({
+        kind: 'success',
+        text: 'Purchase order created.',
+      });
+      await load();
     } catch (err: any) {
       setFormError(err.message);
-    } finally {
-      setSubmitting(false);
     }
   };
 
-  const handleApprove = async (id: string) => {
-    setActionError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/purchase-orders/${id}/approve`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approvedBy: approverName || 'Unknown' }),
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        throw new Error(typeof body.error === 'string' ? body.error : JSON.stringify(body.error));
-      }
-      loadPOs();
-    } catch (err: any) {
-      setActionError(err.message);
-    }
+  const copyId = async (id: string) => {
+    await navigator.clipboard.writeText(id);
+    setCopied(id);
+    setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500);
   };
 
-  const handleReceive = async (id: string) => {
-    const qty = Number(receiveQty[id]);
-    if (!qty || qty <= 0) {
-      setActionError('Enter a valid quantity to receive first.');
-      return;
-    }
-    setActionError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/purchase-orders/${id}/receive`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quantityReceived: qty }),
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        throw new Error(typeof body.error === 'string' ? body.error : JSON.stringify(body.error));
-      }
-      setReceiveQty({ ...receiveQty, [id]: '' });
-      loadPOs();
-    } catch (err: any) {
-      setActionError(err.message);
-    }
-  };
+  const vendorName = (id: string) =>
+    vendors.find((v) => v.id === id)?.name ?? `${id.slice(0, 8)}…`;
 
-  const statusBadge = (status: PurchaseOrder['status']) => {
-    switch (status) {
-      case 'APPROVED': return 'bg-blue-100 text-blue-700';
-      case 'RECEIVED': return 'bg-green-100 text-green-700';
-      case 'PARTIALLY_RECEIVED': return 'bg-yellow-100 text-yellow-700';
-      default: return 'bg-slate-100 text-slate-700';
-    }
-  };
+  const columns: Column<PurchaseOrder>[] = [
+    {
+      key: 'sku',
+      header: 'SKU',
+      sortValue: (p) => p.sku,
+      render: (p) => <span className="font-medium text-slate-900">{p.sku}</span>,
+    },
+    {
+      key: 'vendor',
+      header: 'Vendor',
+      render: (p) => (
+        <button
+          onClick={() => copyId(p.vendorId)}
+          title={`Copy ${p.vendorId}`}
+          className="inline-flex items-center gap-1 font-mono text-xs text-indigo-600 hover:underline"
+        >
+          {vendorName(p.vendorId)}{' '}
+          {copied === p.vendorId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        </button>
+      ),
+    },
+    {
+      key: 'qty',
+      header: 'Received / Ordered',
+      sortValue: (p) => p.quantityOrdered,
+      render: (p) => (
+        <div className="w-40">
+          <div className="mb-1 text-xs">
+            {p.quantityReceived} / {p.quantityOrdered}
+          </div>
+          <div className="h-1.5 rounded-full bg-slate-100">
+            <div
+              className="h-1.5 rounded-full bg-indigo-500"
+              style={{ width: `${Math.min(100, (p.quantityReceived / p.quantityOrdered) * 100)}%` }}
+            />
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'cost',
+      header: 'Unit cost',
+      align: 'right',
+      sortValue: (p) => Number(p.unitCost),
+      render: (p) => `KES ${Number(p.unitCost).toLocaleString()}`,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      sortValue: (p) => p.status,
+      render: (p) => <Pill tone={tone[p.status]}>{p.status.replace('_', ' ')}</Pill>,
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      sortValue: (p) => p.createdAt,
+      render: (p) => new Date(p.createdAt).toLocaleDateString(),
+    },
+  ];
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Procurement Dashboard</h2>
-          <p className="text-sm text-slate-500">Manage purchase orders, lock in costs, and enforce approvals.</p>
+          <h2 className="text-2xl font-bold text-slate-800">Purchase orders</h2>
+          <p className="text-sm text-slate-500"></p>
         </div>
         <button
-          onClick={() => setShowForm((v) => !v)}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition"
+          onClick={() => setShowCreate(true)}
+          disabled={vendors.length === 0}
+          title={vendors.length === 0 ? 'Approve a vendor first' : undefined}
+          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {showForm ? 'Cancel' : '+ Create Purchase Order'}
+          + New purchase order
         </button>
       </div>
 
-      {showForm && (
-        <form onSubmit={handleCreate} className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6 grid grid-cols-3 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Vendor ID</label>
-            <input
-              required
-              placeholder="UUID from Vendor Portal"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
-              value={form.vendorId}
-              onChange={(e) => setForm({ ...form, vendorId: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">SKU</label>
-            <input
-              required
-              placeholder="Must be an approved product for this vendor"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-              value={form.sku}
-              onChange={(e) => setForm({ ...form, sku: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1">Quantity</label>
-            <input
-              required
-              type="number"
-              min={1}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-              value={form.quantity}
-              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-            />
-          </div>
-          <div className="col-span-3 flex items-center justify-between">
-            {formError && <p className="text-red-600 text-sm">{formError}</p>}
+      {notice && <Banner {...notice} onClose={() => setNotice(null)} />}
+
+      <DataTable
+        rows={pos}
+        columns={columns}
+        rowId={(p) => p.id}
+        noun="purchase orders"
+        loading={loading}
+        error={error}
+        searchPlaceholder="Search SKU or vendor"
+        searchText={(p) => `${p.sku} ${vendorName(p.vendorId)}`}
+        filters={[
+          {
+            label: 'All statuses',
+            options: ['DRAFT', 'APPROVED', 'PARTIALLY_RECEIVED', 'RECEIVED'].map((s) => ({
+              value: s,
+              label: s.replace('_', ' '),
+            })),
+            predicate: (p, v) => p.status === v,
+          },
+        ]}
+        bulkActions={[{ label: 'Approve', onClick: (ids) => setApproveIds(ids) }]}
+        rowActions={(p) =>
+          p.status === 'APPROVED' || p.status === 'PARTIALLY_RECEIVED' ? (
             <button
-              type="submit"
-              disabled={submitting}
-              className="ml-auto bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition disabled:opacity-50"
+              onClick={() => setReceiving(p)}
+              className="text-xs font-semibold text-green-700 hover:underline"
             >
-              {submitting ? 'Creating…' : 'Create PO'}
+              Receive
             </button>
-          </div>
-        </form>
-      )}
+          ) : null
+        }
+      />
 
-      <div className="mb-4 flex items-center gap-2">
-        <label className="text-xs font-semibold text-slate-500">Approving as:</label>
-        <input
-          value={approverName}
-          onChange={(e) => setApproverName(e.target.value)}
-          className="border border-slate-300 rounded-lg px-2 py-1 text-sm w-48"
+      {approveIds && (
+        <QuickInput
+          title="Approve purchase orders"
+          label="Approving as"
+          defaultValue="Store Manager"
+          submitLabel="Approve"
+          onSubmit={approve}
+          onClose={() => setApproveIds(null)}
         />
-      </div>
-
-      {actionError && (
-        <div className="bg-red-50 text-red-600 p-3 rounded-lg border border-red-200 mb-4 text-sm">{actionError}</div>
+      )}
+      {receiving && (
+        <QuickInput
+          title={`Receive ${receiving.sku}`}
+          label={`Quantity received (${receiving.quantityOrdered - receiving.quantityReceived} outstanding)`}
+          type="number"
+          submitLabel="Record receipt"
+          onSubmit={receive}
+          onClose={() => setReceiving(null)}
+        />
       )}
 
-      {loading && <div className="text-slate-600">Loading purchase orders...</div>}
-      {error && <div className="bg-amber-50 text-amber-700 p-4 rounded-lg border border-amber-200">Notice: {error} (Ensure procurement-service is running)</div>}
+      {showCreate && (
+        <Modal title="New purchase order" onClose={() => setShowCreate(false)}>
+          <form onSubmit={create} className="space-y-4">
+            <Field label={`Vendor (${vendors.length} approved)`}>
+              <select
+                required
+                className={inputCls}
+                value={form.vendorId}
+                onChange={(e) =>
+                  // Reset SKU when the vendor changes
+                  setForm({ ...form, vendorId: e.target.value, sku: '' })
+                }
+              >
+                <option value="">— Select a vendor —</option>
+                {vendors.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} · {v.paymentTerms} · {v.leadTimeDays}d
+                  </option>
+                ))}
+              </select>
+            </Field>
 
-      {!loading && !error && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                <th className="p-4">SKU</th>
-                <th className="p-4">Vendor ID</th>
-                <th className="p-4">Qty (Ordered / Received)</th>
-                <th className="p-4">Unit Cost</th>
-                <th className="p-4">Status</th>
-                <th className="p-4">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 text-sm text-slate-700">
-              {pos.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="p-6 text-center text-slate-400">No purchase orders found.</td>
-                </tr>
-              ) : (
-                pos.map((po) => (
-                  <tr key={po.id} className="hover:bg-slate-50">
-                    <td className="p-4 font-medium text-slate-900">{po.sku}</td>
-                    <td className="p-4 font-mono text-xs text-slate-500">{po.vendorId}</td>
-                    <td className="p-4">{po.quantityReceived} / {po.quantityOrdered}</td>
-                    <td className="p-4 font-semibold text-slate-900">KES {Number(po.unitCost).toLocaleString()}</td>
-                    <td className="p-4">
-                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${statusBadge(po.status)}`}>
-                        {po.status}
-                      </span>
-                    </td>
-                    <td className="p-4">
-                      {po.status === 'DRAFT' && (
-                        <button
-                          onClick={() => handleApprove(po.id)}
-                          className="text-xs font-semibold text-blue-700 hover:underline"
-                        >
-                          Approve
-                        </button>
-                      )}
-                      {(po.status === 'APPROVED' || po.status === 'PARTIALLY_RECEIVED') && (
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min={1}
-                            placeholder="qty"
-                            className="w-16 border border-slate-300 rounded px-1 py-0.5 text-xs"
-                            value={receiveQty[po.id] || ''}
-                            onChange={(e) => setReceiveQty({ ...receiveQty, [po.id]: e.target.value })}
-                          />
-                          <button
-                            onClick={() => handleReceive(po.id)}
-                            className="text-xs font-semibold text-green-700 hover:underline"
-                          >
-                            Receive
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+            {selectedVendor && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                <div>
+                  <span className="font-semibold">Terms:</span> {selectedVendor.paymentTerms} ·{' '}
+                  <span className="font-semibold">Lead time:</span> {selectedVendor.leadTimeDays} days
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Cost and terms will be locked onto the PO at creation.
+                </div>
+              </div>
+            )}
+
+            <Field label="SKU (approved for this vendor)">
+              <select
+                required
+                disabled={!form.vendorId || loadingProducts}
+                className={inputCls}
+                value={form.sku}
+                onChange={(e) => setForm({ ...form, sku: e.target.value })}
+              >
+                <option value="">
+                  {!form.vendorId
+                    ? '— Pick a vendor first —'
+                    : loadingProducts
+                      ? 'Loading products…'
+                      : vendorProducts.length === 0
+                        ? '— No approved products for this vendor —'
+                        : '— Select a SKU —'}
+                </option>
+                {vendorProducts.map((p) => (
+                  <option key={p.id} value={p.sku}>
+                    {p.sku} · KES {Number(p.unitCost).toLocaleString()}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            {form.vendorId && !loadingProducts && vendorProducts.length === 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+                This vendor has no approved products yet. Ask Vendor Management to assign
+                SKUs before creating a PO.
+              </div>
+            )}
+
+            {selectedProduct && (
+              <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-700">
+                <span className="font-semibold">Locked cost:</span> KES{' '}
+                {Number(selectedProduct.unitCost).toLocaleString()} per unit
+              </div>
+            )}
+
+            <Field label="Quantity">
+              <input
+                required
+                type="number"
+                min={1}
+                className={inputCls}
+                value={form.quantity}
+                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              />
+            </Field>
+
+            {selectedProduct && form.quantity && (
+              <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                <div className="flex justify-between">
+                  <span>Estimated total</span>
+                  <span className="font-mono font-semibold">
+                    KES{' '}
+                    {(
+                      Number(form.quantity) * Number(selectedProduct.unitCost)
+                    ).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+              <span className="text-sm text-red-600">{formError}</span>
+              <button
+                type="submit"
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                Create PO
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );

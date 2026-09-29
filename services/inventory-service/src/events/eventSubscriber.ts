@@ -3,130 +3,176 @@ import { InventoryRepository } from "../repositories/InventoryRepository.js";
 
 const Redis = RedisModule.default ?? RedisModule;
 
-const STREAM_NAME = "procurement.events";
+const PROCUREMENT_STREAM = "procurement.events";
+const RECEIVING_STREAM = "receiving.events";
 const CONSUMER_GROUP = "inventory-service-group";
 const CONSUMER_NAME = "inventory-worker-1";
 
-const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
-const client = new Redis(redisUrl);
+const redisUrl = process.env.REDIS_URL;
+if (!redisUrl) {
+  throw new Error("REDIS_URL is not set");
+}
+
+const redis = new Redis(redisUrl);
 const inventoryRepo = new InventoryRepository();
 
-let running = false;
+redis.on("error", (err: unknown) => {
+  console.error("Redis subscriber connection error:", err);
+});
 
-async function ensureConsumerGroup() {
+let keepPolling = true;
+
+async function ensureConsumerGroupExists(streamName: string) {
   try {
-    await client.xgroup("CREATE", STREAM_NAME, CONSUMER_GROUP, "$", "MKSTREAM");
-  } catch (err: any) {
-    if (!err.message?.includes("BUSYGROUP")) {
-      console.error("Error creating consumer group:", err);
+    await redis.xgroup("CREATE", streamName, CONSUMER_GROUP, "$", "MKSTREAM");
+    console.log(
+      `Created consumer group "${CONSUMER_GROUP}" on stream "${streamName}"`,
+    );
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("BUSYGROUP")) {
+      console.log(
+        `Consumer group "${CONSUMER_GROUP}" already exists on "${streamName}" — resuming.`,
+      );
+    } else {
+      throw error;
     }
   }
 }
 
-export async function startEventSubscriber() {
-  await ensureConsumerGroup();
+function parseFields(fields: string[]): Record<string, string> {
+  const parsed: Record<string, string> = {};
+  for (let i = 0; i < fields.length; i += 2) {
+    const key = fields[i];
+    const value = fields[i + 1];
+    if (key === undefined || value === undefined) continue;
+    parsed[key] = value;
+  }
+  return parsed;
+}
+
+async function handlePurchaseOrderApproved(dataRaw: string, entryId: string) {
+  const data = JSON.parse(dataRaw) as {
+    sku: string;
+    quantity: number;
+    locationId?: string;
+  };
+  const targetLocation = data.locationId || "MAIN_WAREHOUSE";
+
+  await inventoryRepo.incrementOnOrder(data.sku, targetLocation, data.quantity);
   console.log(
-    `Inventory service listening to stream ${STREAM_NAME} via consumer group ${CONSUMER_GROUP}`,
+    `[${entryId}] PurchaseOrderApproved: +${data.quantity} on-order for SKU ${data.sku} at ${targetLocation}`,
   );
-
-  running = true;
-  pollStream();
 }
 
-export function stopEventSubscriber() {
-  running = false;
-}
+async function handleGoodsReceived(dataRaw: string, entryId: string) {
+  const data = JSON.parse(dataRaw) as {
+    grnId: string;
+    purchaseOrderId: string;
+    sku: string;
+    quantity: number;
+    locationId?: string;
+  };
+  const targetLocation = data.locationId || "MAIN_WAREHOUSE";
 
-async function handlePurchaseOrderApproved(
-  id: string,
-  poId: string,
-  sku: string,
-  quantity: number,
-  targetLocation: string,
-) {
-  const updated = await inventoryRepo.incrementOnOrder(
-    sku,
+  const updated = await inventoryRepo.receiveOnOrderStock(
+    data.sku,
     targetLocation,
-    quantity,
+    data.quantity,
   );
 
-  if (updated) {
-    console.log(
-      `Processed PurchaseOrderApproved stream entry ${id} for PO ${poId}: SKU ${sku} at ${targetLocation} by +${quantity}`,
+  if (!updated) {
+    console.error(
+      `[${entryId}] GoodsReceived: no inventory item found for SKU ${data.sku} at ${targetLocation} — stock NOT recorded`,
     );
     return;
   }
 
   console.log(
-    `No inventory record for SKU ${sku} at ${targetLocation} — creating one (PO ${poId}).`,
-  );
-  await inventoryRepo.create({
-    productName: sku, // placeholder; Inventory doesn't know the real name yet
-    sku,
-    locationId: targetLocation,
-    quantityOnHand: 0,
-  });
-  await inventoryRepo.incrementOnOrder(sku, targetLocation, quantity);
-  console.log(
-    `Processed PurchaseOrderApproved stream entry ${id} for PO ${poId} after creating inventory row: SKU ${sku} at ${targetLocation} by +${quantity}`,
+    `[${entryId}] GoodsReceived: +${data.quantity} on-hand for SKU ${data.sku} at ${targetLocation} (GRN ${data.grnId})`,
   );
 }
 
-async function pollStream() {
-  while (running) {
+async function processEntry(
+  streamName: string,
+  entryId: string,
+  fields: string[],
+) {
+  const parsed = parseFields(fields);
+
+  if (!parsed.data) {
+    console.error(
+      `[${entryId}] Event on ${streamName} missing data field, skipping`,
+    );
+    return;
+  }
+
+  if (
+    streamName === PROCUREMENT_STREAM &&
+    parsed.event === "PurchaseOrderApproved"
+  ) {
+    await handlePurchaseOrderApproved(parsed.data, entryId);
+    return;
+  }
+
+  if (streamName === RECEIVING_STREAM && parsed.event === "GoodsReceived") {
+    await handleGoodsReceived(parsed.data, entryId);
+    return;
+  }
+}
+
+async function pollLoop() {
+  while (keepPolling) {
     try {
-      const results = (await client.xreadgroup(
+      const response = await redis.xreadgroup(
         "GROUP",
         CONSUMER_GROUP,
         CONSUMER_NAME,
+        "COUNT",
+        10,
         "BLOCK",
         5000,
         "STREAMS",
-        STREAM_NAME,
+        PROCUREMENT_STREAM,
+        RECEIVING_STREAM,
         ">",
-      )) as [string, [string, string[]][]][] | null;
+        ">",
+      );
 
-      if (results) {
-        for (const [, streams] of results) {
-          for (const [id, fields] of streams) {
-            try {
-              const dataIndex = fields.indexOf("data");
-              const rawData =
-                dataIndex !== -1 ? fields[dataIndex + 1] : undefined;
+      if (!response) continue;
 
-              if (rawData === undefined) {
-                console.error(
-                  `Stream entry ${id} is missing a "data" field, skipping (poison message — acking to avoid infinite retry)`,
-                );
-                await client.xack(STREAM_NAME, CONSUMER_GROUP, id);
-                continue;
-              }
+      const streams = response as [string, [string, string[]][]][];
 
-              const parsedData = JSON.parse(rawData);
-              const { id: poId, sku, quantity, locationId } = parsedData;
-              const targetLocation = locationId || "MAIN_WAREHOUSE";
-
-              await handlePurchaseOrderApproved(
-                id,
-                poId,
-                sku,
-                quantity,
-                targetLocation,
-              );
-
-              await client.xack(STREAM_NAME, CONSUMER_GROUP, id);
-            } catch (innerErr) {
-              console.error(
-                `Error processing stream message entry ${id}, leaving unacked for retry:`,
-                innerErr,
-              );
-            }
+      for (const [streamName, entries] of streams) {
+        for (const [entryId, fields] of entries) {
+          try {
+            await processEntry(streamName, entryId, fields);
+            await redis.xack(streamName, CONSUMER_GROUP, entryId);
+          } catch (processingError) {
+            console.error(
+              `Failed to process ${streamName} entry ${entryId}, leaving unacknowledged for retry:`,
+              processingError,
+            );
           }
         }
       }
-    } catch (err) {
-      console.error("Error reading from Redis stream:", err);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } catch (error) {
+      console.error("Error reading from event streams, retrying in 5s:", error);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }
+}
+
+export async function startEventSubscriber() {
+  await ensureConsumerGroupExists(PROCUREMENT_STREAM);
+  await ensureConsumerGroupExists(RECEIVING_STREAM);
+  console.log(
+    `Listening on "${PROCUREMENT_STREAM}" and "${RECEIVING_STREAM}" as consumer "${CONSUMER_NAME}" in group "${CONSUMER_GROUP}"`,
+  );
+  void pollLoop();
+}
+
+export async function stopEventSubscriber() {
+  keepPolling = false;
+  await redis.quit();
 }

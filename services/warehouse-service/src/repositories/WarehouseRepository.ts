@@ -1,0 +1,478 @@
+import { eq, and, sql, desc, inArray } from "drizzle-orm";
+import { db } from "../db/db.js";
+import {
+  zones,
+  aisles,
+  shelves,
+  bins,
+  stockPlacements,
+  putawayTasks,
+  pickingTasks,
+  stockTransfers,
+  stockTransferItems,
+} from "../db/schema.js";
+
+export class WarehouseRepository {
+  async createZone(data: {
+    warehouseId: string;
+    code: string;
+    description?: string;
+  }) {
+    const result = await db.insert(zones).values(data).returning();
+    return result[0] ?? null;
+  }
+
+  async findZonesByWarehouse(warehouseId: string) {
+    return await db
+      .select()
+      .from(zones)
+      .where(eq(zones.warehouseId, warehouseId));
+  }
+
+  async findZoneById(id: string) {
+    const result = await db.select().from(zones).where(eq(zones.id, id));
+    return result[0] ?? null;
+  }
+
+  async createAisle(data: { zoneId: string; code: string }) {
+    const result = await db.insert(aisles).values(data).returning();
+    return result[0] ?? null;
+  }
+
+  async findAislesByZone(zoneId: string) {
+    return await db.select().from(aisles).where(eq(aisles.zoneId, zoneId));
+  }
+  async createShelf(data: { aisleId: string; code: string }) {
+    const result = await db.insert(shelves).values(data).returning();
+    return result[0] ?? null;
+  }
+
+  async findShelvesByAisle(aisleId: string) {
+    return await db.select().from(shelves).where(eq(shelves.aisleId, aisleId));
+  }
+
+  async findShelfPath(shelfId: string) {
+    const result = await db
+      .select({
+        shelfCode: shelves.code,
+        aisleCode: aisles.code,
+        zoneCode: zones.code,
+        warehouseId: zones.warehouseId,
+      })
+      .from(shelves)
+      .innerJoin(aisles, eq(shelves.aisleId, aisles.id))
+      .innerJoin(zones, eq(aisles.zoneId, zones.id))
+      .where(eq(shelves.id, shelfId));
+
+    return result[0] ?? null;
+  }
+
+  async createBin(data: {
+    shelfId: string;
+    binCode: string;
+    fullCode: string;
+    capacityUnits: number;
+  }) {
+    const result = await db.insert(bins).values(data).returning();
+    return result[0] ?? null;
+  }
+
+  async findBinById(id: string) {
+    const result = await db.select().from(bins).where(eq(bins.id, id));
+    return result[0] ?? null;
+  }
+
+  async findBinWithPath(id: string) {
+    const result = await db
+      .select({
+        id: bins.id,
+        shelfId: bins.shelfId,
+        binCode: bins.binCode,
+        fullCode: bins.fullCode,
+        capacityUnits: bins.capacityUnits,
+        currentUtilization: bins.currentUtilization,
+        createdAt: bins.createdAt,
+        updatedAt: bins.updatedAt,
+        shelfCode: shelves.code,
+        aisleCode: aisles.code,
+        zoneCode: zones.code,
+        warehouseId: zones.warehouseId,
+      })
+      .from(bins)
+      .innerJoin(shelves, eq(bins.shelfId, shelves.id))
+      .innerJoin(aisles, eq(shelves.aisleId, aisles.id))
+      .innerJoin(zones, eq(aisles.zoneId, zones.id))
+      .where(eq(bins.id, id));
+    return result[0] ?? null;
+  }
+
+  async findFirstAvailableBinInZone(
+    warehouseId: string,
+    zoneCode: string,
+    minCapacity: number,
+  ) {
+    const result = await db
+      .select({
+        id: bins.id,
+        shelfId: bins.shelfId,
+        binCode: bins.binCode,
+        fullCode: bins.fullCode,
+        capacityUnits: bins.capacityUnits,
+        currentUtilization: bins.currentUtilization,
+        shelfCode: shelves.code,
+        aisleCode: aisles.code,
+        zoneCode: zones.code,
+        warehouseId: zones.warehouseId,
+      })
+      .from(bins)
+      .innerJoin(shelves, eq(bins.shelfId, shelves.id))
+      .innerJoin(aisles, eq(shelves.aisleId, aisles.id))
+      .innerJoin(zones, eq(aisles.zoneId, zones.id))
+      .where(
+        and(
+          eq(zones.warehouseId, warehouseId),
+          eq(zones.code, zoneCode),
+          sql`${bins.capacityUnits} - ${bins.currentUtilization} >= ${minCapacity}`,
+        ),
+      )
+      .orderBy(bins.fullCode)
+      .limit(1);
+    return result[0] ?? null;
+  }
+
+  async findAnyAvailableBin(warehouseId: string, minCapacity: number) {
+    const result = await db
+      .select({
+        id: bins.id,
+        shelfId: bins.shelfId,
+        binCode: bins.binCode,
+        fullCode: bins.fullCode,
+        capacityUnits: bins.capacityUnits,
+        currentUtilization: bins.currentUtilization,
+        shelfCode: shelves.code,
+        aisleCode: aisles.code,
+        zoneCode: zones.code,
+        warehouseId: zones.warehouseId,
+      })
+      .from(bins)
+      .innerJoin(shelves, eq(bins.shelfId, shelves.id))
+      .innerJoin(aisles, eq(shelves.aisleId, aisles.id))
+      .innerJoin(zones, eq(aisles.zoneId, zones.id))
+      .where(
+        and(
+          eq(zones.warehouseId, warehouseId),
+          sql`${bins.capacityUnits} - ${bins.currentUtilization} >= ${minCapacity}`,
+        ),
+      )
+      .orderBy(bins.fullCode)
+      .limit(1);
+    return result[0] ?? null;
+  }
+
+  async getUtilizationReport(warehouseId: string) {
+    const rows = await db
+      .select({
+        zoneCode: zones.code,
+        binCount: sql<number>`COUNT(${bins.id})`,
+        capacity: sql<number>`COALESCE(SUM(${bins.capacityUnits}), 0)`,
+        utilization: sql<number>`COALESCE(SUM(${bins.currentUtilization}), 0)`,
+      })
+      .from(zones)
+      .leftJoin(aisles, eq(aisles.zoneId, zones.id))
+      .leftJoin(shelves, eq(shelves.aisleId, aisles.id))
+      .leftJoin(bins, eq(bins.shelfId, shelves.id))
+      .where(eq(zones.warehouseId, warehouseId))
+      .groupBy(zones.code)
+      .orderBy(zones.code);
+    const totalBins = rows.reduce((sum, r) => sum + Number(r.binCount), 0);
+    const totalCapacity = rows.reduce((sum, r) => sum + Number(r.capacity), 0);
+    const totalUtilization = rows.reduce(
+      (sum, r) => sum + Number(r.utilization),
+      0,
+    );
+    const utilizationPct =
+      totalCapacity === 0
+        ? 0
+        : Math.round((totalUtilization / totalCapacity) * 10000) / 100;
+
+    return {
+      warehouseId,
+      totalBins,
+      totalCapacity,
+      totalUtilization,
+      utilizationPct,
+      byZone: rows.map((r) => ({
+        zoneCode: r.zoneCode,
+        bins: Number(r.binCount),
+        capacity: Number(r.capacity),
+        utilization: Number(r.utilization),
+      })),
+    };
+  }
+
+  async placeStock(data: { sku: string; binId: string; quantity: number }) {
+    return await db.transaction(async (tx) => {
+      const placement = await tx
+        .insert(stockPlacements)
+        .values({
+          sku: data.sku,
+          binId: data.binId,
+          quantity: data.quantity,
+        })
+        .onConflictDoUpdate({
+          target: [stockPlacements.sku, stockPlacements.binId],
+          set: {
+            quantity: sql`${stockPlacements.quantity} + ${data.quantity}`,
+          },
+        })
+        .returning();
+
+      const updatedBin = await tx
+        .update(bins)
+        .set({
+          currentUtilization: sql`${bins.currentUtilization} + ${data.quantity}`,
+        })
+        .where(eq(bins.id, data.binId))
+        .returning();
+
+      return { placement: placement[0] ?? null, bin: updatedBin[0] ?? null };
+    });
+  }
+
+  async createPutawayTask(data: {
+    grnId: string;
+    purchaseOrderId: string;
+    sku: string;
+    quantity: number;
+    suggestedBinId: string | null;
+  }) {
+    const result = await db.insert(putawayTasks).values(data).returning();
+    return result[0] ?? null;
+  }
+
+  async findPutawayTasks(filter: {
+    status?: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED" | undefined;
+    assignedTo?: string | undefined;
+  }) {
+    const conditions = [];
+    if (filter.status) conditions.push(eq(putawayTasks.status, filter.status));
+    if (filter.assignedTo)
+      conditions.push(eq(putawayTasks.assignedTo, filter.assignedTo));
+    return await db
+      .select()
+      .from(putawayTasks)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(putawayTasks.createdAt));
+  }
+
+  async findPutawayTaskById(id: string) {
+    const result = await db
+      .select()
+      .from(putawayTasks)
+      .where(eq(putawayTasks.id, id));
+    return result[0] ?? null;
+  }
+
+  async startPutawayTask(id: string, assignedTo?: string) {
+    const result = await db
+      .update(putawayTasks)
+      .set({
+        status: "IN_PROGRESS",
+        assignedTo: assignedTo ?? null,
+        startedAt: new Date(),
+      })
+      .where(and(eq(putawayTasks.id, id), eq(putawayTasks.status, "PENDING")))
+      .returning();
+    return result[0] ?? null;
+  }
+
+  async completePutawayTask(taskId: string, actualBinId: string) {
+    return await db.transaction(async (tx) => {
+      const task = await tx
+        .update(putawayTasks)
+        .set({
+          status: "COMPLETED",
+          actualBinId,
+          completedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(putawayTasks.id, taskId),
+            inArray(putawayTasks.status, ["PENDING", "IN_PROGRESS"]),
+          ),
+        )
+        .returning();
+
+      if (task.length === 0) {
+        return null;
+      }
+
+      const taskRow = task[0]!;
+
+      await tx
+        .insert(stockPlacements)
+        .values({
+          sku: taskRow.sku,
+          binId: actualBinId,
+          quantity: taskRow.quantity,
+        })
+        .onConflictDoUpdate({
+          target: [stockPlacements.sku, stockPlacements.binId],
+          set: {
+            quantity: sql`${stockPlacements.quantity} + ${taskRow.quantity}`,
+          },
+        });
+
+      await tx
+        .update(bins)
+        .set({
+          currentUtilization: sql`${bins.currentUtilization} + ${taskRow.quantity}`,
+        })
+        .where(eq(bins.id, actualBinId));
+
+      return taskRow;
+    });
+  }
+
+  async createPickingTask(data: {
+    referenceId: string;
+    sku: string;
+    quantity: number;
+    fromBinId?: string | null;
+  }) {
+    const result = await db.insert(pickingTasks).values(data).returning();
+    return result[0] ?? null;
+  }
+
+  async findPickingTasks(filter: {
+    status?: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED" | undefined;
+    assignedTo?: string | undefined;
+  }) {
+    const conditions = [];
+    if (filter.status) conditions.push(eq(pickingTasks.status, filter.status));
+    if (filter.assignedTo)
+      conditions.push(eq(pickingTasks.assignedTo, filter.assignedTo));
+    return await db
+      .select()
+      .from(pickingTasks)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(pickingTasks.createdAt));
+  }
+
+  async findPickingTaskById(id: string) {
+    const result = await db
+      .select()
+      .from(pickingTasks)
+      .where(eq(pickingTasks.id, id));
+    return result[0] ?? null;
+  }
+
+  async startPickingTask(id: string, assignedTo?: string) {
+    const result = await db
+      .update(pickingTasks)
+      .set({
+        status: "IN_PROGRESS",
+        assignedTo: assignedTo ?? null,
+        startedAt: new Date(),
+      })
+      .where(and(eq(pickingTasks.id, id), eq(pickingTasks.status, "PENDING")))
+      .returning();
+    return result[0] ?? null;
+  }
+
+  async completePickingTask(id: string) {
+    const result = await db
+      .update(pickingTasks)
+      .set({ status: "COMPLETED", completedAt: new Date() })
+      .where(
+        and(
+          eq(pickingTasks.id, id),
+          inArray(pickingTasks.status, ["PENDING", "IN_PROGRESS"]),
+        ),
+      )
+      .returning();
+    return result[0] ?? null;
+  }
+
+  async createTransfer(data: {
+    fromWarehouseId: string;
+    toWarehouseId: string;
+    items: { sku: string; quantity: number }[];
+  }) {
+    return await db.transaction(async (tx) => {
+      const transferRows = await tx
+        .insert(stockTransfers)
+        .values({
+          fromWarehouseId: data.fromWarehouseId,
+          toWarehouseId: data.toWarehouseId,
+        })
+        .returning();
+
+      const transfer = transferRows[0]!;
+
+      const items = await tx
+        .insert(stockTransferItems)
+        .values(
+          data.items.map((item) => ({
+            transferId: transfer.id,
+            sku: item.sku,
+            quantity: item.quantity,
+          })),
+        )
+        .returning();
+
+      return { ...transfer, items };
+    });
+  }
+
+  async findTransferById(id: string) {
+    const transferRows = await db
+      .select()
+      .from(stockTransfers)
+      .where(eq(stockTransfers.id, id));
+    if (transferRows.length === 0) return null;
+
+    const items = await db
+      .select()
+      .from(stockTransferItems)
+      .where(eq(stockTransferItems.transferId, id));
+
+    return { ...transferRows[0]!, items };
+  }
+
+  async findTransfers(filter?: { status?: string | undefined }) {
+    if (filter?.status) {
+      return await db
+        .select()
+        .from(stockTransfers)
+        .where(eq(stockTransfers.status, filter.status as any))
+        .orderBy(desc(stockTransfers.createdAt));
+    }
+    return await db
+      .select()
+      .from(stockTransfers)
+      .orderBy(desc(stockTransfers.createdAt));
+  }
+
+  async markTransferComplete(id: string) {
+    const result = await db
+      .update(stockTransfers)
+      .set({ status: "COMPLETED", completedAt: new Date() })
+      .where(
+        and(eq(stockTransfers.id, id), eq(stockTransfers.status, "PENDING")),
+      )
+      .returning();
+    return result[0] ?? null;
+  }
+
+  async markTransferCancelled(id: string) {
+    const result = await db
+      .update(stockTransfers)
+      .set({ status: "CANCELLED" })
+      .where(
+        and(eq(stockTransfers.id, id), eq(stockTransfers.status, "PENDING")),
+      )
+      .returning();
+    return result[0] ?? null;
+  }
+}

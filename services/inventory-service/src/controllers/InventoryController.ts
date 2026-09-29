@@ -125,6 +125,40 @@ export class InventoryController {
     }
   };
 
+  updateAttributes = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { sku } = req.params as { sku: string };
+      const { locationId, ...attributes } = req.body;
+      const updated = await this.inventoryService.updateAttributes(
+        sku,
+        attributes,
+        locationId,
+      );
+      return res.status(200).json(updated);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  transferStock = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { sku, fromLocationId, toLocationId, quantity } = req.body;
+      const result = await this.inventoryService.transferStock(
+        sku,
+        fromLocationId,
+        toLocationId,
+        quantity,
+      );
+      return res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  };
+
   deleteItem = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params as { id: string };

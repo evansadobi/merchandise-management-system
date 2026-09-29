@@ -5,11 +5,17 @@
   "workspaces": [
     "services/vendor-service",
     "services/procurement-service",
-    "services/inventory-service"
+    "services/inventory-service",
+        "services/receiving-service",
+       "services/warehouse-service"
+
+
   ],
   "scripts": {
     "dev:vendor": "npm --prefix services/vendor-service run dev",
     "dev:procurement": "npm --prefix services/procurement-service run dev",
-    "dev:inventory": "npm --prefix services/inventory-service run dev"
+    "dev:inventory": "npm --prefix services/inventory-service run dev",
+        "dev:receiving": "npm --prefix services/receiving-service run dev"
+
   }
 }

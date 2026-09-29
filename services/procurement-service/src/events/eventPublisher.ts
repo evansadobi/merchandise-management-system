@@ -19,6 +19,7 @@ export async function publishPurchaseOrderApproved(po: {
   id: string;
   sku: string;
   quantity: number;
+  vendorId: string;
   locationId?: string;
 }) {
   const payload = {

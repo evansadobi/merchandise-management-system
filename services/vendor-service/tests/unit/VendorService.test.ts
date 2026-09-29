@@ -122,7 +122,10 @@ describe("VendorService", () => {
       const result = await vendorService.createVendor(newVendorData);
 
       expect(result).toEqual(createdVendor);
-      expect(mockVendorRepo.create).toHaveBeenCalledWith(newVendorData);
+      expect(mockVendorRepo.create).toHaveBeenCalledWith({
+        ...newVendorData,
+        status: "PENDING",
+      });
     });
   });
 

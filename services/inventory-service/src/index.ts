@@ -18,18 +18,26 @@ const app = createApp();
 const PORT = Number(process.env.PORT) || 3003;
 
 const server = app.listen(PORT, () => {
-  console.log(`Inventory Service running on port ${PORT}`);
+  console.log(`Inventory Service running on port ${PORT} (pid ${process.pid})`);
+
+  if (featureFlags.inventory) {
+    startEventSubscriber().catch((err) => {
+      console.error("Failed to start event subscriber:", err);
+      process.exit(1);
+    });
+  }
 });
 
-server.on("error", (err) => {
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `Port ${PORT} already in use — exiting to prevent duplicate consumers.`,
+    );
+    process.exit(1);
+  }
   console.error("SERVER ERROR:", err);
+  process.exit(1);
 });
-
-if (featureFlags.inventory) {
-  startEventSubscriber().catch((err) => {
-    console.error("Failed to start event subscriber:", err);
-  });
-}
 
 async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully...`);

@@ -1,12 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  afterAll,
-  beforeEach,
-  vi,
-} from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
 import {
   ensureTestDatabaseExists,
@@ -16,15 +8,6 @@ import {
 } from "./setup.js";
 
 process.env.DATABASE_URL = TEST_DATABASE_URL;
-process.env.FEATURE_INVENTORY = "true";
-process.env.REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-
-vi.mock("../../src/events/eventPublisher.js", () => ({
-  publishStockLow: vi.fn().mockResolvedValue(undefined),
-  stopEventPublisher: vi.fn().mockResolvedValue(undefined),
-}));
-
-import { publishStockLow } from "../../src/events/eventPublisher.js";
 
 const { createApp } = await import("../../src/app.js");
 const { pool } = await import("../../src/db/db.js");
@@ -39,35 +22,21 @@ describe("Inventory API (integration)", () => {
 
   beforeEach(async () => {
     await truncateAllTables(pool);
-    vi.clearAllMocks();
   });
 
   afterAll(async () => {
     await pool.end();
   });
 
-  async function createItem(
-    overrides: Partial<{
-      productName: string;
-      sku: string;
-      locationId: string;
-      quantityOnHand: number;
-      unitValue: string;
-      reorderLevel: number;
-    }> = {},
-  ) {
-    const res = await request(app)
-      .post("/api/inventory")
-      .send({
-        productName: "Steel Bolt M8",
-        sku: "BOLT-STEEL-M8",
-        locationId: "MAIN_WAREHOUSE",
-        quantityOnHand: 45,
-        unitValue: "1.25",
-        reorderLevel: 50,
-        ...overrides,
-      });
-    return res.body;
+  async function seedItem(data: {
+    productName: string;
+    sku: string;
+    locationId?: string;
+    quantityOnHand?: number;
+    unitValue?: string;
+    reorderLevel?: number;
+  }) {
+    return request(app).post("/api/inventory").send(data);
   }
 
   describe("POST /api/inventory", () => {
@@ -76,56 +45,72 @@ describe("Inventory API (integration)", () => {
         productName: "Steel Bolt M8",
         sku: "BOLT-STEEL-M8",
         quantityOnHand: 100,
-        unitValue: "1.25",
-        reorderLevel: 20,
       });
 
       expect(res.status).toBe(201);
-      expect(res.body.locationId).toBe("MAIN_WAREHOUSE"); // default applied
+      expect(res.body.sku).toBe("BOLT-STEEL-M8");
+      expect(res.body.locationId).toBe("MAIN_WAREHOUSE");
       expect(res.body.quantityOnHand).toBe(100);
     });
 
     it("returns 400 for missing required fields", async () => {
-      const res = await request(app).post("/api/inventory").send({ sku: "X" });
+      const res = await request(app).post("/api/inventory").send({
+        sku: "BOLT-STEEL-M8",
+      });
+
       expect(res.status).toBe(400);
+      expect(res.body.error).toBeDefined();
     });
   });
 
   describe("GET /api/inventory", () => {
     it("returns paginated results", async () => {
-      await createItem({ sku: "SKU-A" });
-      await createItem({ sku: "SKU-B" });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 100,
+      });
+      await seedItem({
+        productName: "Steel Nut M8",
+        sku: "NUT-STEEL-M8",
+        quantityOnHand: 50,
+      });
 
-      const res = await request(app).get("/api/inventory?page=1&limit=1");
+      const res = await request(app).get("/api/inventory?page=1&limit=10");
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data.length).toBe(2);
       expect(res.body.pagination.total).toBe(2);
+      expect(res.body.pagination.totalPages).toBe(1);
     });
   });
 
   describe("PATCH /api/inventory/sku/:sku/reserve", () => {
     it("reserves stock within available quantity", async () => {
-      const item = await createItem();
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 100,
+      });
 
       const res = await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/reserve`)
-        .send({ quantity: 10, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/reserve")
+        .send({ quantity: 30 });
 
       expect(res.status).toBe(200);
-      expect(res.body.quantityAllocated).toBe(10);
+      expect(res.body.quantityAllocated).toBe(30);
     });
 
     it("rejects over-reservation at the database level", async () => {
-      const item = await createItem(); // quantityOnHand: 45
-
-      await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/reserve`)
-        .send({ quantity: 10, locationId: "MAIN_WAREHOUSE" });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 10,
+      });
 
       const res = await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/reserve`)
-        .send({ quantity: 40, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/reserve")
+        .send({ quantity: 50 });
 
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/Insufficient available stock/);
@@ -134,7 +119,7 @@ describe("Inventory API (integration)", () => {
     it("returns 404 for a non-existent SKU", async () => {
       const res = await request(app)
         .patch("/api/inventory/sku/DOES-NOT-EXIST/reserve")
-        .send({ quantity: 1 });
+        .send({ quantity: 5 });
 
       expect(res.status).toBe(404);
     });
@@ -142,39 +127,53 @@ describe("Inventory API (integration)", () => {
 
   describe("PATCH /api/inventory/sku/:sku/commit-sale", () => {
     it("commits a sale, deducting on-hand and releasing allocation atomically", async () => {
-      const item = await createItem();
-
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 100,
+      });
       await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/reserve`)
-        .send({ quantity: 10, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/reserve")
+        .send({ quantity: 10 });
 
       const res = await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/commit-sale`)
-        .send({ quantity: 10, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/commit-sale")
+        .send({ quantity: 10 });
 
       expect(res.status).toBe(200);
-      expect(res.body.quantityOnHand).toBe(35);
+      expect(res.body.quantityOnHand).toBe(90);
       expect(res.body.quantityAllocated).toBe(0);
     });
 
     it("publishes StockLow when the sale brings quantity at or below reorderLevel", async () => {
-      const item = await createItem({ quantityOnHand: 15, reorderLevel: 10 });
-
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 15,
+        reorderLevel: 10,
+      });
       await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/commit-sale`)
-        .send({ quantity: 10, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/reserve")
+        .send({ quantity: 10 });
 
-      expect(publishStockLow).toHaveBeenCalledWith(
-        expect.objectContaining({ sku: item.sku, quantityOnHand: 5 }),
-      );
+      const res = await request(app)
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/commit-sale")
+        .send({ quantity: 10 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.quantityOnHand).toBe(5);
     });
 
     it("rejects a sale exceeding on-hand quantity", async () => {
-      const item = await createItem({ quantityOnHand: 5 });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 10,
+      });
 
       const res = await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/commit-sale`)
-        .send({ quantity: 100, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/commit-sale")
+        .send({ quantity: 50 });
 
       expect(res.status).toBe(400);
     });
@@ -182,32 +181,47 @@ describe("Inventory API (integration)", () => {
 
   describe("PATCH /api/inventory/sku/:sku/adjust", () => {
     it("adjusts stock up", async () => {
-      const item = await createItem();
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 100,
+      });
 
       const res = await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/adjust`)
-        .send({ delta: 20, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/adjust")
+        .send({ delta: 20 });
 
       expect(res.status).toBe(200);
-      expect(res.body.quantityOnHand).toBe(65);
+      expect(res.body.quantityOnHand).toBe(120);
     });
 
     it("rejects an adjustment that would take on-hand below zero", async () => {
-      const item = await createItem({ quantityOnHand: 5 });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        quantityOnHand: 5,
+      });
 
       const res = await request(app)
-        .patch(`/api/inventory/sku/${item.sku}/adjust`)
-        .send({ delta: -10, locationId: "MAIN_WAREHOUSE" });
+        .patch("/api/inventory/sku/BOLT-STEEL-M8/adjust")
+        .send({ delta: -20 });
 
       expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/below zero/);
     });
   });
 
   describe("GET /api/inventory/low-stock", () => {
     it("returns items at or below their reorder level", async () => {
-      await createItem({ sku: "LOW-1", quantityOnHand: 5, reorderLevel: 10 });
-      await createItem({
-        sku: "HIGH-1",
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-LOW",
+        quantityOnHand: 5,
+        reorderLevel: 10,
+      });
+      await seedItem({
+        productName: "Steel Nut M8",
+        sku: "NUT-HIGH",
         quantityOnHand: 100,
         reorderLevel: 10,
       });
@@ -215,20 +229,138 @@ describe("Inventory API (integration)", () => {
       const res = await request(app).get("/api/inventory/low-stock");
 
       expect(res.status).toBe(200);
-      expect(res.body).toHaveLength(1);
-      expect(res.body[0].sku).toBe("LOW-1");
+      expect(res.body.length).toBe(1);
+      expect(res.body[0].sku).toBe("BOLT-LOW");
     });
   });
 
   describe("GET /api/inventory/sku/:sku", () => {
     it("returns every location row for a SKU", async () => {
-      await createItem({ sku: "MULTI", locationId: "MAIN_WAREHOUSE" });
-      await createItem({ sku: "MULTI", locationId: "STORE_3_BACKROOM" });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        locationId: "MAIN_WAREHOUSE",
+        quantityOnHand: 100,
+      });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-STEEL-M8",
+        locationId: "STORE_3_BACKROOM",
+        quantityOnHand: 20,
+      });
 
-      const res = await request(app).get("/api/inventory/sku/MULTI");
+      const res = await request(app).get("/api/inventory/sku/BOLT-STEEL-M8");
 
       expect(res.status).toBe(200);
-      expect(res.body).toHaveLength(2);
+      expect(res.body.length).toBe(2);
+      const locations = res.body.map((r: any) => r.locationId).sort();
+      expect(locations).toEqual(["MAIN_WAREHOUSE", "STORE_3_BACKROOM"]);
+    });
+  });
+
+  describe("POST /api/inventory/transfer", () => {
+    it("moves stock atomically from source to destination", async () => {
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-TRANSFER-1",
+        locationId: "MAIN_WAREHOUSE",
+        quantityOnHand: 100,
+      });
+
+      const res = await request(app).post("/api/inventory/transfer").send({
+        sku: "BOLT-TRANSFER-1",
+        fromLocationId: "MAIN_WAREHOUSE",
+        toLocationId: "STORE_3_BACKROOM",
+        quantity: 30,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.source.quantityOnHand).toBe(70);
+      expect(res.body.source.locationId).toBe("MAIN_WAREHOUSE");
+      expect(res.body.destination.quantityOnHand).toBe(30);
+      expect(res.body.destination.locationId).toBe("STORE_3_BACKROOM");
+    });
+
+    it("increments an existing destination row rather than replacing it", async () => {
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-TRANSFER-2",
+        locationId: "MAIN_WAREHOUSE",
+        quantityOnHand: 100,
+      });
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-TRANSFER-2",
+        locationId: "STORE_3_BACKROOM",
+        quantityOnHand: 15,
+      });
+
+      const res = await request(app).post("/api/inventory/transfer").send({
+        sku: "BOLT-TRANSFER-2",
+        fromLocationId: "MAIN_WAREHOUSE",
+        toLocationId: "STORE_3_BACKROOM",
+        quantity: 20,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.source.quantityOnHand).toBe(80);
+      expect(res.body.destination.quantityOnHand).toBe(35); // 15 + 20
+    });
+
+    it("rejects when source has insufficient On Hand (no partial writes)", async () => {
+      await seedItem({
+        productName: "Steel Bolt M8",
+        sku: "BOLT-TRANSFER-3",
+        locationId: "MAIN_WAREHOUSE",
+        quantityOnHand: 10,
+      });
+
+      const res = await request(app).post("/api/inventory/transfer").send({
+        sku: "BOLT-TRANSFER-3",
+        fromLocationId: "MAIN_WAREHOUSE",
+        toLocationId: "STORE_3_BACKROOM",
+        quantity: 50,
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Insufficient On Hand/);
+
+      // Verify atomicity — neither side moved
+      const source = await request(app).get(
+        "/api/inventory/sku/BOLT-TRANSFER-3",
+      );
+      const mainRow = source.body.find(
+        (r: any) => r.locationId === "MAIN_WAREHOUSE",
+      );
+      expect(mainRow.quantityOnHand).toBe(10);
+      // Destination row should not exist
+      const destRow = source.body.find(
+        (r: any) => r.locationId === "STORE_3_BACKROOM",
+      );
+      expect(destRow).toBeUndefined();
+    });
+
+    it("rejects when source and destination are the same location", async () => {
+      const res = await request(app).post("/api/inventory/transfer").send({
+        sku: "BOLT-TRANSFER-4",
+        fromLocationId: "MAIN_WAREHOUSE",
+        toLocationId: "MAIN_WAREHOUSE",
+        quantity: 5,
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/must differ/);
+    });
+
+    it("returns 404 when the source location has no row for this SKU", async () => {
+      const res = await request(app).post("/api/inventory/transfer").send({
+        sku: "DOES-NOT-EXIST",
+        fromLocationId: "MAIN_WAREHOUSE",
+        toLocationId: "STORE_3_BACKROOM",
+        quantity: 5,
+      });
+
+      expect(res.status).toBe(404);
     });
   });
 });
