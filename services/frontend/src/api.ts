@@ -8,10 +8,14 @@ export async function api<T = unknown>(
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    const err = body?.error;
-    throw new Error(
-      typeof err === "string" ? err : JSON.stringify(err ?? res.statusText),
-    );
+    const err = body?.message ?? body?.error ?? body?.details ?? res.statusText;
+    const message =
+      typeof err === "string"
+        ? err
+        : err != null
+          ? JSON.stringify(err)
+          : "Request failed";
+    throw new Error(message);
   }
   return body as T;
 }

@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { Copy, Check, Package, Pencil, Trash2 } from 'lucide-react';
-import DataTable, { type Column } from '../components/DataTable';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Check, Copy, MoreHorizontal, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { Banner, Field, Modal, Pill, inputCls } from '../components/ui';
-import { api, runAll, summarize } from '../api';
+import { api } from '../api';
+
+type VendorStatus = 'PENDING' | 'APPROVED' | 'SUSPENDED' | 'ARCHIVED';
 
 interface Vendor {
   id: string;
@@ -11,7 +12,9 @@ interface Vendor {
   contactPhone: string;
   paymentTerms: string;
   leadTimeDays: number;
-  status: 'PENDING' | 'APPROVED' | 'SUSPENDED' | 'ARCHIVED';
+  status: VendorStatus;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface VendorProduct {
@@ -19,557 +22,894 @@ interface VendorProduct {
   vendorId: string;
   sku: string;
   unitCost: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
-const API = 'http://localhost:3001/api/vendors';
-const tone = { APPROVED: 'green', PENDING: 'yellow', SUSPENDED: 'red', ARCHIVED: 'slate' } as const;
+interface VendorListResponse {
+  data: Vendor[];
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
 
-const empty = {
+const API = `${import.meta.env.VITE_VENDOR_API ?? 'http://localhost:3001'}/api/vendors`;
+
+const statusTone: Record<VendorStatus, 'green' | 'yellow' | 'red' | 'slate'> = {
+  APPROVED: 'green',
+  PENDING: 'yellow',
+  SUSPENDED: 'red',
+  ARCHIVED: 'slate',
+};
+
+const nextStatusMap: Record<VendorStatus, Array<{ label: string; value: VendorStatus }>> = {
+  PENDING: [
+    { label: 'Approve', value: 'APPROVED' },
+    { label: 'Suspend', value: 'SUSPENDED' },
+  ],
+  APPROVED: [
+    { label: 'Suspend', value: 'SUSPENDED' },
+    { label: 'Archive', value: 'ARCHIVED' },
+  ],
+  SUSPENDED: [
+    { label: 'Approve', value: 'APPROVED' },
+    { label: 'Archive', value: 'ARCHIVED' },
+  ],
+  ARCHIVED: [],
+};
+
+const emptyVendorForm = {
   name: '',
   contactEmail: '',
   contactPhone: '',
   paymentTerms: '',
   leadTimeDays: '',
-  status: 'PENDING' as 'PENDING' | 'APPROVED',
-  approvedBy: '',
 };
 
-const nextStates: Record<Vendor['status'], { label: string; status: Vendor['status'] }[]> = {
-  PENDING: [
-    { label: 'Approve', status: 'APPROVED' },
-    { label: 'Suspend', status: 'SUSPENDED' },
-  ],
-  APPROVED: [
-    { label: 'Suspend', status: 'SUSPENDED' },
-    { label: 'Archive', status: 'ARCHIVED' },
-  ],
-  SUSPENDED: [
-    { label: 'Approve', status: 'APPROVED' },
-    { label: 'Archive', status: 'ARCHIVED' },
-  ],
-  ARCHIVED: [],
-};
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Vendor service unavailable';
+}
+
+function formatDate(value?: string) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
 
 export default function VendorsView() {
   const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [page, setPage] = useState(1);
+  const [limit] = useState(10);
+  const [statusFilter, setStatusFilter] = useState<'ALL' | VendorStatus>('ALL');
+  const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState(empty);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [managingProducts, setManagingProducts] = useState<Vendor | null>(null);
-  const [statusMenu, setStatusMenu] = useState<string | null>(null);
+  const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
+  const [menuVendorId, setMenuVendorId] = useState<string | null>(null);
+  const [createForm, setCreateForm] = useState(emptyVendorForm);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const load = async () => {
+  const loadVendors = async (nextPage = page) => {
     try {
+      setLoading(true);
       setError(null);
-      const body = await api<{ data: Vendor[] }>(`${API}?limit=100`);
-      setVendors(body.data);
-    } catch (e: any) {
-      setError(`${e.message} (Is vendor-service running?)`);
+      const body = await api<VendorListResponse>(`${API}?page=${nextPage}&limit=${limit}`);
+      setVendors(Array.isArray(body?.data) ? body.data : []);
+    } catch (caughtError) {
+      setVendors([]);
+      setError(`${getErrorMessage(caughtError)} (Vendor service unavailable)`);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void loadVendors(page);
+  }, []);
 
   useEffect(() => {
-    if (!statusMenu) return;
-    const close = () => setStatusMenu(null);
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [statusMenu]);
+    if (!menuVendorId) return;
+    const handleClick = () => setMenuVendorId(null);
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [menuVendorId]);
 
-  const changeStatus = async (vendor: Vendor, newStatus: Vendor['status']) => {
-    setStatusMenu(null);
+  const filteredVendors = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    return vendors.filter((vendor) => {
+      const matchesStatus = statusFilter === 'ALL' || vendor.status === statusFilter;
+      const haystack = `${vendor.name} ${vendor.contactEmail} ${vendor.contactPhone}`.toLowerCase();
+      const matchesQuery = !search || haystack.includes(search);
+      return matchesStatus && matchesQuery;
+    });
+  }, [vendors, query, statusFilter]);
+
+  const handleCreateVendor = async (event: FormEvent) => {
+    event.preventDefault();
+    setCreateError(null);
+
+    const trimmedName = createForm.name.trim();
+    const trimmedEmail = createForm.contactEmail.trim();
+    const trimmedPhone = createForm.contactPhone.trim();
+    const trimmedTerms = createForm.paymentTerms.trim();
+    const leadValue = Number(createForm.leadTimeDays);
+
+    if (!trimmedName || !trimmedEmail || !trimmedPhone || !trimmedTerms) {
+      setCreateError('Name, email, phone, and payment terms are required.');
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setCreateError('Enter a valid email address.');
+      return;
+    }
+
+    if (!/^\+?[0-9()\-\s.]{7,20}$/.test(trimmedPhone)) {
+      setCreateError('Enter a valid phone number.');
+      return;
+    }
+
+    if (!Number.isInteger(leadValue) || leadValue < 0) {
+      setCreateError('Lead time days must be a non-negative integer.');
+      return;
+    }
+
+    setSaving(true);
     try {
-      await api(`${API}/${vendor.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: newStatus }),
+      await api<Vendor>(API, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: trimmedName,
+          contactEmail: trimmedEmail,
+          contactPhone: trimmedPhone,
+          paymentTerms: trimmedTerms,
+          leadTimeDays: leadValue,
+        }),
       });
-      setNotice({ kind: 'success', text: `${vendor.name} → ${newStatus}` });
-      await load();
-    } catch (e: any) {
-      setNotice({ kind: 'error', text: e.message });
+
+      setCreateForm(emptyVendorForm);
+      setShowCreate(false);
+      setNotice({ kind: 'success', text: 'Vendor created and set to PENDING' });
+      setPage(1);
+      await loadVendors(1);
+    } catch (caughtError) {
+      const message = getErrorMessage(caughtError);
+      setCreateError(message);
+      setNotice({ kind: 'error', text: message });
+    } finally {
+      setSaving(false);
     }
   };
 
-  const bulkStatus = (status: Vendor['status']) => async (ids: string[]) => {
-    const r = await runAll(ids, (id) => api(`${API}/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }));
-    setNotice(summarize(r, 'updated'));
-    await load();
-  };
+  const handleStatusChange = async (vendor: Vendor, nextStatus: VendorStatus) => {
+    setMenuVendorId(null);
 
-  const bulkDelete = async (ids: string[]) => {
-    if (!confirm(`Delete ${ids.length} vendor(s)? This cannot be undone.`)) return;
-    const r = await runAll(ids, (id) => api(`${API}/${id}`, { method: 'DELETE' }));
-    setNotice(summarize(r, 'deleted'));
-    await load();
-  };
-
-  const create = async (e: FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    // Client-side validation for the "Approved" path
-    if (form.status === 'APPROVED' && !form.approvedBy.trim()) {
-      setFormError('Approved by is required when creating as APPROVED.');
+    if ((nextStatus === 'ARCHIVED' || nextStatus === 'SUSPENDED') && !window.confirm(`Set ${vendor.name} to ${nextStatus}?`)) {
       return;
     }
 
     try {
-      const created = await api<Vendor>(API, {
-        method: 'POST',
-        body: JSON.stringify({
-          name: form.name,
-          contactEmail: form.contactEmail,
-          contactPhone: form.contactPhone,
-          paymentTerms: form.paymentTerms,
-          leadTimeDays: Number(form.leadTimeDays),
-        }),
+      await api<Vendor>(`${API}/${vendor.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus }),
       });
-
-      if (form.status === 'APPROVED' && created?.id) {
-        await api(`${API}/${created.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            status: 'APPROVED',
-          }),
-        });
-      }
-
-      setForm(empty);
-      setShowCreate(false);
       setNotice({
         kind: 'success',
-        text:
-          form.status === 'APPROVED'
-            ? `${form.name} created and approved by ${form.approvedBy}.`
-            : `${form.name} created as PENDING. Approve it before Procurement can use it.`,
+        text: nextStatus === 'ARCHIVED' ? 'Vendor archived — products are no longer purchasable' : `Vendor updated to ${nextStatus}`,
       });
-      await load();
-    } catch (err: any) {
-      setFormError(err.message);
+      await loadVendors(page);
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
     }
   };
 
-  const copyId = async (id: string) => {
-    await navigator.clipboard.writeText(id);
-    setCopied(id);
-    setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500);
+  const handleVendorDelete = async (vendor: Vendor) => {
+    if (!window.confirm(`Delete ${vendor.name}? This action cannot be undone.`)) return;
+    try {
+      await api(`${API}/${vendor.id}`, { method: 'DELETE' });
+      setNotice({ kind: 'success', text: 'Vendor deleted' });
+      setSelectedVendor(null);
+      await loadVendors(page);
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
+    }
   };
 
-  const columns: Column<Vendor>[] = [
-    {
-      key: 'name',
-      header: 'Supplier',
-      sortValue: (v) => v.name.toLowerCase(),
-      render: (v) => (
-        <div>
-          <div className="font-medium text-slate-900">{v.name}</div>
-          <div className="text-xs text-slate-400">{v.contactEmail}</div>
-        </div>
-      ),
-    },
-    { key: 'phone', header: 'Phone', render: (v) => v.contactPhone },
-    { key: 'terms', header: 'Payment terms', sortValue: (v) => v.paymentTerms, render: (v) => v.paymentTerms },
-    { key: 'lead', header: 'Lead time', sortValue: (v) => v.leadTimeDays, render: (v) => `${v.leadTimeDays} days` },
-    {
-      key: 'id',
-      header: 'ID',
-      render: (v) => (
-        <button
-          onClick={() => copyId(v.id)}
-          title={`Copy ${v.id}`}
-          className="inline-flex items-center gap-1 font-mono text-xs text-indigo-600 hover:underline"
-        >
-          {v.id.slice(0, 8)}… {copied === v.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-        </button>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      sortValue: (v) => v.status,
-      render: (v) => {
-        const options = nextStates[v.status];
-        const isMenuOpen = statusMenu === v.id;
-        return (
-          <div className="relative inline-block">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setStatusMenu(isMenuOpen ? null : v.id);
-              }}
-              className="inline-flex items-center gap-1 hover:opacity-80"
-              title={options.length > 0 ? 'Change status' : 'Terminal state'}
-            >
-              <Pill tone={tone[v.status]}>{v.status}</Pill>
-              {options.length > 0 && <span className="text-slate-400 text-[10px]">▾</span>}
-            </button>
-
-            {isMenuOpen && options.length > 0 && (
-              <div
-                className="absolute right-0 top-full z-40 mt-1 w-32 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {options.map((opt) => (
-                  <button
-                    key={opt.status}
-                    onClick={() => changeStatus(v, opt.status)}
-                    className="block w-full px-3 py-1.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      },
-    },
-  ];
-
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Vendors</h2>
-          <p className="text-sm text-slate-500">Suppliers and their terms.</p>
+          <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Supplier directory</div>
+          <h1 className="mt-2 text-3xl font-bold text-slate-900">Vendors</h1>
         </div>
         <button
+          type="button"
           onClick={() => setShowCreate(true)}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800"
         >
-          + New vendor
+          <Plus className="h-4 w-4" />
+          New Vendor
         </button>
       </div>
 
-      {notice && <Banner {...notice} onClose={() => setNotice(null)} />}
+      {notice && <Banner kind={notice.kind} text={notice.text} onClose={() => setNotice(null)} />}
 
-      <DataTable
-        rows={vendors}
-        columns={columns}
-        rowId={(v) => v.id}
-        noun="vendors"
-        loading={loading}
-        error={error}
-        searchPlaceholder="Search vendor name or email"
-        searchText={(v) => `${v.name} ${v.contactEmail}`}
-        filters={[{
-          label: 'All statuses',
-          options: ['PENDING', 'APPROVED', 'SUSPENDED', 'ARCHIVED'].map((s) => ({ value: s, label: s })),
-          predicate: (v, val) => v.status === val,
-        }]}
-        bulkActions={[
-          { label: 'Approve', onClick: bulkStatus('APPROVED') },
-          { label: 'Suspend', onClick: bulkStatus('SUSPENDED') },
-          { label: 'Delete', tone: 'danger', onClick: bulkDelete },
-        ]}
-        rowActions={(v) => (
-          <div className="flex items-center justify-end gap-2">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap gap-2">
+            {(['ALL', 'APPROVED', 'PENDING', 'SUSPENDED', 'ARCHIVED'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setStatusFilter(option)}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                  statusFilter === option ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {option === 'ALL' ? 'All' : option}
+              </button>
+            ))}
+          </div>
+
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search supplier, email or phone"
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 focus:bg-white md:max-w-xs"
+          />
+        </div>
+      </div>
+
+      <div className="overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <table className="min-w-full text-left text-sm text-slate-700">
+          <thead className="bg-slate-50 text-xs uppercase tracking-[0.12em] text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Contact email</th>
+              <th className="px-4 py-3">Phone</th>
+              <th className="px-4 py-3">Payment terms</th>
+              <th className="px-4 py-3">Lead time</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
+                  Loading suppliers…
+                </td>
+              </tr>
+            ) : error ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-10 text-center">
+                  <div className="space-y-2">
+                    <div className="text-red-600">{error}</div>
+                    <button
+                      type="button"
+                      onClick={() => void loadVendors(page)}
+                      className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : filteredVendors.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
+                  {vendors.length === 0 ? 'No vendors yet — add your first supplier.' : 'No vendors match your filters.'}
+                </td>
+              </tr>
+            ) : (
+              filteredVendors.map((vendor) => (
+                <tr
+                  key={vendor.id}
+                  className="cursor-pointer border-t border-slate-200 hover:bg-slate-50"
+                  onClick={() => setSelectedVendor(vendor)}
+                >
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-slate-900">{vendor.name}</div>
+                    <div className="text-xs text-slate-500">{vendor.id.slice(0, 8)}…</div>
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{vendor.contactEmail}</td>
+                  <td className="px-4 py-3 text-slate-600">{vendor.contactPhone}</td>
+                  <td className="px-4 py-3 text-slate-600">{vendor.paymentTerms}</td>
+                  <td className="px-4 py-3 text-slate-600">{vendor.leadTimeDays} days</td>
+                  <td className="px-4 py-3">
+                    <Pill tone={statusTone[vendor.status]}>{vendor.status}</Pill>
+                  </td>
+                  <td className="relative z-10 px-4 py-3 text-right">
+                    <div className="relative inline-block z-20" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="rounded-lg border border-slate-200 bg-white p-2 text-slate-500 hover:text-slate-700"
+                        onClick={() => setMenuVendorId((current) => (current === vendor.id ? null : vendor.id))}
+                        aria-label={`Vendor actions for ${vendor.name}`}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+
+                      {menuVendorId === vendor.id && (
+                        <div className="absolute right-0 top-full z-20 mt-2 w-42 rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+                          <button type="button" className="block w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50" onClick={() => setSelectedVendor(vendor)}>
+                            View
+                          </button>
+                          <button type="button" className="block w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50" onClick={() => setSelectedVendor(vendor)}>
+                            Edit
+                          </button>
+                          {nextStatusMap[vendor.status].map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              className="block w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50"
+                              onClick={() => void handleStatusChange(vendor, option.value)}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                          <button type="button" className="block w-full rounded-lg px-2 py-2 text-left text-sm text-red-600 hover:bg-red-50" onClick={() => void handleVendorDelete(vendor)}>
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {!loading && !error && vendors.length > 0 && (
+        <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <div className="text-sm text-slate-500">
+            Page {page} of {Math.max(1, Math.ceil(vendors.length / limit))}
+          </div>
+          <div className="flex items-center gap-2">
             <button
-              title="Edit vendor"
-              onClick={() => {/* edit modal — later */}}
-              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-            <button
-              title="Manage products"
-              onClick={() => setManagingProducts(v)}
-              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            >
-              <Package className="h-3.5 w-3.5" />
-            </button>
-            <button
-              title="Delete vendor"
+              type="button"
+              disabled={page <= 1}
               onClick={() => {
-                if (confirm(`Delete ${v.name}?`)) bulkDelete([v.id]);
+                const next = Math.max(1, page - 1);
+                setPage(next);
+                void loadVendors(next);
               }}
-              className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              Prev
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const next = page + 1;
+                setPage(next);
+                void loadVendors(next);
+              }}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600"
+            >
+              Next
             </button>
           </div>
-        )}
-      />
+        </div>
+      )}
 
       {showCreate && (
         <Modal title="New vendor" onClose={() => setShowCreate(false)}>
-          <form onSubmit={create} className="grid grid-cols-2 gap-4">
-            <Field label="Name">
-              <input required className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            </Field>
-            <Field label="Contact email">
-              <input required type="email" className={inputCls} value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} />
-            </Field>
-            <Field label="Contact phone">
-              <input required placeholder="+254712345678" className={inputCls} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
-            </Field>
+          <form onSubmit={handleCreateVendor} className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Name">
+                <input
+                  required
+                  className={inputCls}
+                  value={createForm.name}
+                  onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
+                />
+              </Field>
+
+              <Field label="Contact email">
+                <input
+                  required
+                  type="email"
+                  className={inputCls}
+                  value={createForm.contactEmail}
+                  onChange={(event) => setCreateForm((current) => ({ ...current, contactEmail: event.target.value }))}
+                />
+              </Field>
+
+              <Field label="Contact phone">
+                <input
+                  required
+                  className={inputCls}
+                  placeholder="+254712345678"
+                  value={createForm.contactPhone}
+                  onChange={(event) => setCreateForm((current) => ({ ...current, contactPhone: event.target.value }))}
+                />
+              </Field>
+
+              <Field label="Lead time (days)">
+                <input
+                  required
+                  min={0}
+                  type="number"
+                  className={inputCls}
+                  value={createForm.leadTimeDays}
+                  onChange={(event) => setCreateForm((current) => ({ ...current, leadTimeDays: event.target.value }))}
+                />
+              </Field>
+            </div>
+
             <Field label="Payment terms">
-              <input required placeholder="Net 30" className={inputCls} value={form.paymentTerms} onChange={(e) => setForm({ ...form, paymentTerms: e.target.value })} />
-            </Field>
-            <Field label="Lead time (days)">
-              <input required type="number" min={0} className={inputCls} value={form.leadTimeDays} onChange={(e) => setForm({ ...form, leadTimeDays: e.target.value })} />
-            </Field>
-            <Field label="Initial status">
-              <select
+              <input
+                required
                 className={inputCls}
-                value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value as 'PENDING' | 'APPROVED' })}
-              >
-                <option value="PENDING">Pending</option>
-                <option value="APPROVED">Approved</option>
-              </select>
+                value={createForm.paymentTerms}
+                onChange={(event) => setCreateForm((current) => ({ ...current, paymentTerms: event.target.value }))}
+              />
             </Field>
 
-            {form.status === 'APPROVED' && (
-              <div className="col-span-2">
-                <Field label="Approved by">
-                  <input
-                    required
-                    className={inputCls}
-                    placeholder="e.g. Store Manager"
-                    value={form.approvedBy}
-                    onChange={(e) => setForm({ ...form, approvedBy: e.target.value })}
-                  />
-                </Field>
+            {createError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {createError}
               </div>
             )}
 
-            <div className="col-span-2 flex items-center justify-between">
-              <span className="text-sm text-red-600">{formError}</span>
-              <button className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700">
-                Create vendor
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button type="button" onClick={() => setShowCreate(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">
+                Cancel
+              </button>
+              <button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60">
+                {saving ? 'Creating…' : 'Create vendor'}
               </button>
             </div>
           </form>
         </Modal>
       )}
 
-      {managingProducts && (
-        <ProductsModal
-          vendor={managingProducts}
-          onClose={() => setManagingProducts(null)}
-          onChanged={() => { /* no-op */ }}
+      {selectedVendor && (
+        <VendorDrawer
+          vendor={selectedVendor}
+          onClose={() => setSelectedVendor(null)}
+          onSaved={async () => {
+            setSelectedVendor(null);
+            await loadVendors(page);
+          }}
+          onDeleted={async () => {
+            setSelectedVendor(null);
+            await loadVendors(page);
+          }}
         />
       )}
     </div>
   );
 }
 
-
-function ProductsModal({
+function VendorDrawer({
   vendor,
   onClose,
-  onChanged,
+  onSaved,
+  onDeleted,
 }: {
   vendor: Vendor;
   onClose: () => void;
-  onChanged: () => void;
+  onSaved: () => Promise<void> | void;
+  onDeleted: () => Promise<void> | void;
 }) {
+  const [form, setForm] = useState({
+    name: vendor.name,
+    contactEmail: vendor.contactEmail,
+    contactPhone: vendor.contactPhone,
+    paymentTerms: vendor.paymentTerms,
+    leadTimeDays: String(vendor.leadTimeDays),
+  });
+  const [editingContact, setEditingContact] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [copiedVendorId, setCopiedVendorId] = useState<string | null>(null);
   const [products, setProducts] = useState<VendorProduct[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [productLoading, setProductLoading] = useState(true);
+  const [productError, setProductError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
-  const [newSku, setNewSku] = useState('');
-  const [newCost, setNewCost] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editCost, setEditCost] = useState('');
+  const [showAddProduct, setShowAddProduct] = useState(false);
+  const [newProduct, setNewProduct] = useState({ sku: '', unitCost: '' });
+  const [addingProduct, setAddingProduct] = useState(false);
+  const [productEditId, setProductEditId] = useState<string | null>(null);
+  const [productEditCost, setProductEditCost] = useState('');
 
-  const load = async () => {
-    setLoading(true);
+  useEffect(() => {
+    setForm({
+      name: vendor.name,
+      contactEmail: vendor.contactEmail,
+      contactPhone: vendor.contactPhone,
+      paymentTerms: vendor.paymentTerms,
+      leadTimeDays: String(vendor.leadTimeDays),
+    });
+  }, [vendor]);
+
+  const handleCopyId = async (vendorId: string) => {
     try {
-      setError(null);
+      await navigator.clipboard.writeText(vendorId);
+      setCopiedVendorId(vendorId);
+      window.setTimeout(() => setCopiedVendorId((current) => (current === vendorId ? null : current)), 1200);
+    } catch {
+      setCopiedVendorId(null);
+    }
+  };
+
+  const loadProducts = async () => {
+    try {
+      setProductLoading(true);
+      setProductError(null);
       const rows = await api<VendorProduct[]>(`${API}/${vendor.id}/products`);
       setProducts(Array.isArray(rows) ? rows : []);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (caughtError) {
+      setProductError(getErrorMessage(caughtError));
+      setProducts([]);
     } finally {
-      setLoading(false);
+      setProductLoading(false);
     }
   };
 
   useEffect(() => {
-    load();
+    void loadProducts();
   }, [vendor.id]);
 
-  const add = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!newSku.trim()) {
+  const handleSaveVendor = async () => {
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.contactEmail.trim());
+    const phoneOk = /^\+?[0-9()\-\s.]{7,20}$/.test(form.contactPhone.trim());
+    const leadValue = Number(form.leadTimeDays);
+
+    if (!form.name.trim() || !form.contactEmail.trim() || !form.contactPhone.trim() || !form.paymentTerms.trim()) {
+      setNotice({ kind: 'error', text: 'Name, email, phone, and payment terms are required.' });
+      return;
+    }
+    if (!emailOk) {
+      setNotice({ kind: 'error', text: 'Enter a valid email address.' });
+      return;
+    }
+    if (!phoneOk) {
+      setNotice({ kind: 'error', text: 'Enter a valid phone number.' });
+      return;
+    }
+    if (!Number.isInteger(leadValue) || leadValue < 0) {
+      setNotice({ kind: 'error', text: 'Lead time must be a non-negative integer.' });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await api<Vendor>(`${API}/${vendor.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: form.name.trim(),
+          contactEmail: form.contactEmail.trim(),
+          contactPhone: form.contactPhone.trim(),
+          paymentTerms: form.paymentTerms.trim(),
+          leadTimeDays: leadValue,
+        }),
+      });
+      setNotice({ kind: 'success', text: 'Vendor updated' });
+      setEditingContact(false);
+      await onSaved();
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleStatusChange = async (nextStatus: VendorStatus) => {
+    if ((nextStatus === 'ARCHIVED' || nextStatus === 'SUSPENDED') && !window.confirm(`Set ${vendor.name} to ${nextStatus}?`)) {
+      return;
+    }
+
+    try {
+      await api<Vendor>(`${API}/${vendor.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      setNotice({
+        kind: 'success',
+        text: nextStatus === 'ARCHIVED' ? 'Vendor archived — products are no longer purchasable' : `Vendor updated to ${nextStatus}`,
+      });
+      await onSaved();
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
+    }
+  };
+
+  const handleDeleteVendor = async () => {
+    if (!window.confirm(`Delete ${vendor.name}? This action cannot be undone.`)) return;
+    try {
+      await api(`${API}/${vendor.id}`, { method: 'DELETE' });
+      setNotice({ kind: 'success', text: 'Vendor deleted' });
+      await onDeleted();
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
+    }
+  };
+
+  const handleAddProduct = async (event: FormEvent) => {
+    event.preventDefault();
+    const sku = newProduct.sku.trim();
+    const unitCost = newProduct.unitCost.trim();
+
+    if (!sku) {
       setNotice({ kind: 'error', text: 'SKU is required.' });
       return;
     }
-    setAdding(true);
+
+    if (Number.isNaN(Number(unitCost)) || Number(unitCost) < 0) {
+      setNotice({ kind: 'error', text: 'Unit cost must be a valid non-negative number.' });
+      return;
+    }
+
+    setAddingProduct(true);
     try {
-      await api(`${API}/${vendor.id}/products`, {
+      await api<VendorProduct>(`${API}/${vendor.id}/products`, {
         method: 'POST',
-        body: JSON.stringify({ sku: newSku.trim(), unitCost: newCost.trim() || '0' }),
+        body: JSON.stringify({ sku, unitCost }),
       });
-      setNewSku('');
-      setNewCost('');
-      setNotice({ kind: 'success', text: 'Product added.' });
-      await load();
-      onChanged();
-    } catch (e: any) {
-      setNotice({ kind: 'error', text: e.message });
+      setNewProduct({ sku: '', unitCost: '' });
+      setShowAddProduct(false);
+      setNotice({ kind: 'success', text: 'Product added' });
+      await loadProducts();
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
     } finally {
-      setAdding(false);
+      setAddingProduct(false);
     }
   };
 
-  const saveCost = async (productId: string) => {
+  const handleDeleteProduct = async (product: VendorProduct) => {
+    if (!window.confirm(`Remove ${product.sku}?`)) return;
     try {
-      await api(`${API}/products/${productId}`, {
+      await api(`${API}/products/${product.id}`, { method: 'DELETE' });
+      setNotice({ kind: 'success', text: `${product.sku} removed` });
+      await loadProducts();
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
+    }
+  };
+
+  const handleEditProductCost = async (productId: string) => {
+    const value = Number(productEditCost);
+    if (Number.isNaN(value) || value < 0) {
+      setNotice({ kind: 'error', text: 'Valid unit cost is required.' });
+      return;
+    }
+
+    try {
+      await api<VendorProduct>(`${API}/products/${productId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ unitCost: editCost }),
+        body: JSON.stringify({ unitCost: productEditCost.trim() }),
       });
-      setEditingId(null);
-      setEditCost('');
-      setNotice({ kind: 'success', text: 'Cost updated.' });
-      await load();
-    } catch (e: any) {
-      setNotice({ kind: 'error', text: e.message });
-    }
-  };
-
-  const remove = async (productId: string, sku: string) => {
-    if (!confirm(`Remove ${sku}?`)) return;
-    try {
-      await api(`${API}/products/${productId}`, { method: 'DELETE' });
-      setNotice({ kind: 'success', text: `${sku} removed.` });
-      await load();
-      onChanged();
-    } catch (e: any) {
-      setNotice({ kind: 'error', text: e.message });
+      setProductEditId(null);
+      setProductEditCost('');
+      setNotice({ kind: 'success', text: 'Product updated' });
+      await loadProducts();
+    } catch (caughtError) {
+      setNotice({ kind: 'error', text: getErrorMessage(caughtError) });
     }
   };
 
   return (
-    <Modal title={`${vendor.name} · Catalog`} onClose={onClose}>
-      <div className="space-y-4">
-        {notice && <Banner kind={notice.kind} text={notice.text} onClose={() => setNotice(null)} />}
+    <div className="fixed inset-0 z-50 bg-slate-950/40" onClick={onClose}>
+      <div className="ml-auto flex h-full w-full max-w-2xl flex-col overflow-hidden bg-slate-50 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Supplier profile</div>
+            <h2 className="mt-1 text-2xl font-bold text-slate-900">{vendor.name}</h2>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
-        {loading ? (
-          <div className="py-6 text-center text-sm text-slate-400">Loading…</div>
-        ) : error ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            {error}
-          </div>
-        ) : products.length === 0 ? (
-          <div className="rounded-lg border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">
-            No products yet. Add one below.
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="p-3">SKU</th>
-                  <th className="p-3 text-right">Unit cost (KES)</th>
-                  <th className="p-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {products.map((p) => (
-                  <tr key={p.id} className="hover:bg-slate-50">
-                    <td className="p-3 font-mono text-xs">{p.sku}</td>
-                    <td className="p-3 text-right">
-                      {editingId === p.id ? (
-                        <input
-                          autoFocus
-                          type="text"
-                          className="w-24 rounded border border-slate-300 px-2 py-1 text-right text-xs font-mono"
-                          value={editCost}
-                          onChange={(e) => setEditCost(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveCost(p.id);
-                            if (e.key === 'Escape') setEditingId(null);
-                          }}
-                        />
-                      ) : (
-                        <span className="font-mono">{Number(p.unitCost).toLocaleString()}</span>
-                      )}
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          title="Edit cost"
-                          onClick={() => {
-                            setEditingId(p.id);
-                            setEditCost(p.unitCost);
-                          }}
-                          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          title="Remove product"
-                          onClick={() => remove(p.id, p.sku)}
-                          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <div className="flex-1 space-y-5 overflow-y-auto p-6">
+          {notice && <Banner kind={notice.kind} text={notice.text} onClose={() => setNotice(null)} />}
 
-        <form onSubmit={add} className="rounded-lg border border-slate-200 bg-white p-4">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Add product
-          </div>
-          <div className="grid grid-cols-[1fr_140px_auto] items-end gap-3">
-            <Field label="SKU">
-              <input
-                required
-                className={`${inputCls} font-mono`}
-                placeholder="e.g. BOLT-STEEL-M8"
-                value={newSku}
-                onChange={(e) => setNewSku(e.target.value)}
-              />
-            </Field>
-            <Field label="Unit cost">
-              <input
-                type="text"
-                inputMode="decimal"
-                className={`${inputCls} font-mono`}
-                placeholder="0.00"
-                value={newCost}
-                onChange={(e) => setNewCost(e.target.value)}
-              />
-            </Field>
-            <button
-              type="submit"
-              disabled={adding}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {adding ? 'Adding…' : 'Add'}
-            </button>
-          </div>
-        </form>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">Contact</h3>
+              <button type="button" onClick={() => setEditingContact((current) => !current)} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                <Pencil className="h-3.5 w-3.5" />
+                {editingContact ? 'Cancel' : 'Edit'}
+              </button>
+            </div>
 
-        <div className="flex justify-end pt-1">
-          <button
-            onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-          >
+            {!editingContact ? (
+              <div className="space-y-3 text-sm text-slate-600">
+                <div><span className="font-medium text-slate-900">Name:</span> {vendor.name}</div>
+                <div><span className="font-medium text-slate-900">Email:</span> {vendor.contactEmail}</div>
+                <div><span className="font-medium text-slate-900">Phone:</span> {vendor.contactPhone}</div>
+                <div><span className="font-medium text-slate-900">Payment terms:</span> {vendor.paymentTerms}</div>
+                <div><span className="font-medium text-slate-900">Lead time:</span> {vendor.leadTimeDays} days</div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Name">
+                    <input className={inputCls} value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
+                  </Field>
+                  <Field label="Email">
+                    <input type="email" className={inputCls} value={form.contactEmail} onChange={(event) => setForm((current) => ({ ...current, contactEmail: event.target.value }))} />
+                  </Field>
+                  <Field label="Phone">
+                    <input className={inputCls} value={form.contactPhone} onChange={(event) => setForm((current) => ({ ...current, contactPhone: event.target.value }))} />
+                  </Field>
+                  <Field label="Lead time days">
+                    <input type="number" min={0} className={inputCls} value={form.leadTimeDays} onChange={(event) => setForm((current) => ({ ...current, leadTimeDays: event.target.value }))} />
+                  </Field>
+                </div>
+
+                <Field label="Payment terms">
+                  <input className={inputCls} value={form.paymentTerms} onChange={(event) => setForm((current) => ({ ...current, paymentTerms: event.target.value }))} />
+                </Field>
+
+                <div className="flex justify-end">
+                  <button type="button" onClick={() => void handleSaveVendor()} disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60">
+                    {saving ? 'Saving…' : 'Save changes'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">Status</h3>
+              <Pill tone={statusTone[vendor.status]}>{vendor.status}</Pill>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {nextStatusMap[vendor.status].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => void handleStatusChange(option.value)}
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  {option.label}
+                </button>
+              ))}
+              {nextStatusMap[vendor.status].length === 0 && (
+                <span className="text-sm text-slate-500">No further status changes available.</span>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">Products catalog</h3>
+              <button type="button" onClick={() => setShowAddProduct(true)} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800">
+                <Plus className="h-4 w-4" /> Add Product
+              </button>
+            </div>
+
+            {productLoading ? (
+              <div className="text-sm text-slate-500">Loading products…</div>
+            ) : productError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{productError}</div>
+            ) : products.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No products yet — add the first SKU this supplier is approved to provide.
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-xl border border-slate-200">
+                <table className="min-w-full text-left text-sm text-slate-700">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-[0.12em] text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">SKU</th>
+                      <th className="px-3 py-2 text-right">Unit cost (KES)</th>
+                      <th className="px-3 py-2 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {products.map((product) => (
+                      <tr key={product.id} className="border-t border-slate-200 hover:bg-slate-50">
+                        <td className="px-3 py-2 font-mono text-xs">{product.sku}</td>
+                        <td className="px-3 py-2 text-right">
+                          {productEditId === product.id ? (
+                            <input
+                              autoFocus
+                              className="w-28 rounded border border-slate-300 bg-white px-2 py-1 text-right text-xs font-mono"
+                              value={productEditCost}
+                              onChange={(event) => setProductEditCost(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') void handleEditProductCost(product.id);
+                                if (event.key === 'Escape') {
+                                  setProductEditId(null);
+                                  setProductEditCost('');
+                                }
+                              }}
+                            />
+                          ) : (
+                            <span className="font-mono">{Number(product.unitCost).toLocaleString()}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button type="button" onClick={() => {
+                              setProductEditId(product.id);
+                              setProductEditCost(product.unitCost);
+                            }} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button type="button" onClick={() => void handleDeleteProduct(product)} className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900">Metadata</h3>
+            <div className="mt-4 space-y-3 text-sm text-slate-600">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-slate-900">Vendor ID</span>
+                <button type="button" onClick={() => void handleCopyId(vendor.id)} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1 font-mono text-xs text-indigo-600 hover:bg-slate-50">
+                  {vendor.id}
+                  {copiedVendorId === vendor.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-slate-900">Created</span>
+                <span>{formatDate(vendor.createdAt)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-slate-900">Updated</span>
+                <span>{formatDate(vendor.updatedAt)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-3 border-t border-slate-200 bg-white px-6 py-4">
+          <button type="button" onClick={() => void handleDeleteVendor()} className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100">
+            Delete vendor
+          </button>
+          <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
             Close
           </button>
         </div>
       </div>
-    </Modal>
+
+      {showAddProduct && (
+        <Modal title={`Add product for ${vendor.name}`} onClose={() => setShowAddProduct(false)}>
+          <form onSubmit={handleAddProduct} className="space-y-4">
+            <Field label="SKU">
+              <input required className={inputCls} placeholder="SKU-001" value={newProduct.sku} onChange={(event) => setNewProduct((current) => ({ ...current, sku: event.target.value }))} />
+            </Field>
+            <Field label="Unit cost (KES)">
+              <input required type="number" min={0} step="0.01" className={inputCls} value={newProduct.unitCost} onChange={(event) => setNewProduct((current) => ({ ...current, unitCost: event.target.value }))} />
+            </Field>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button type="button" onClick={() => setShowAddProduct(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">
+                Cancel
+              </button>
+              <button type="submit" disabled={addingProduct} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60">
+                {addingProduct ? 'Adding…' : 'Add product'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
   );
 }
