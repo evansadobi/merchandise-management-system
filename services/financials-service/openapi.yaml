@@ -1,0 +1,202 @@
+openapi: 3.0.3
+info:
+  title: Financials Service API
+  version: 1.0.0
+  description: >
+    Records and reconciles accounting activity for retail operations, including ledger balances,
+    journal entries, and settlement post-processing for completed sales and reconciliations.
+
+x-events:
+  - name: JournalPosted
+    stream: financials.events
+    description: Published after a journal batch is finalized for posting.
+    payload:
+      $ref: "#/components/schemas/JournalPostedEvent"
+
+components:
+  schemas:
+    LedgerEntry:
+      type: object
+      required:
+        - id
+        - ledgerId
+        - entryType
+        - amount
+        - currency
+        - description
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        ledgerId:
+          type: string
+        entryType:
+          type: string
+          enum: [DEBIT, CREDIT]
+        amount:
+          type: string
+          example: "1250.00"
+        currency:
+          type: string
+          example: "KES"
+        description:
+          type: string
+        referenceType:
+          type: string
+          nullable: true
+        referenceId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    JournalPostedEvent:
+      type: object
+      required:
+        - event
+        - timestamp
+        - data
+      properties:
+        event:
+          type: string
+          example: "JournalPosted"
+        timestamp:
+          type: string
+          format: date-time
+        data:
+          type: object
+          required:
+            - ledgerId
+            - entryCount
+            - totalAmount
+          properties:
+            ledgerId:
+              type: string
+            entryCount:
+              type: integer
+            totalAmount:
+              type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+  parameters:
+    LedgerIdParam:
+      name: ledgerId
+      in: path
+      required: true
+      schema:
+        type: string
+
+paths:
+  /health:
+    get:
+      summary: Health check for the Financials service
+      responses:
+        "200":
+          description: Service status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: financials-service
+
+  /api/financials/ledgers:
+    get:
+      summary: List all ledgers
+      responses:
+        "200":
+          description: List of financial ledgers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    type:
+                      type: string
+                    currency:
+                      type: string
+
+  /api/financials/ledgers/{ledgerId}:
+    get:
+      summary: Get a ledger by identifier
+      parameters:
+        - $ref: "#/components/parameters/LedgerIdParam"
+      responses:
+        "200":
+          description: Ledger snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  type:
+                    type: string
+                  currency:
+                    type: string
+
+  /api/financials/journal-entries:
+    post:
+      summary: Create a journal entry for a ledger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - ledgerId
+                - entryType
+                - amount
+                - currency
+                - description
+              properties:
+                ledgerId:
+                  type: string
+                entryType:
+                  type: string
+                  enum: [DEBIT, CREDIT]
+                amount:
+                  type: string
+                currency:
+                  type: string
+                description:
+                  type: string
+                referenceType:
+                  type: string
+                referenceId:
+                  type: string
+      responses:
+        "201":
+          description: Journal entry created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LedgerEntry"
+        "400":
+          description: Invalid payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
