@@ -145,6 +145,54 @@ describe("ReceivingService", () => {
       );
     });
 
+    it("keeps the GRN record even when procurement receipt sync fails", async () => {
+      mockProcurementClient.getPurchaseOrder.mockResolvedValue({
+        id: poId,
+        sku: "BOLT-STEEL-M8",
+        quantityOrdered: 50,
+        quantityReceived: 0,
+        status: "APPROVED",
+      });
+      mockProcurementClient.recordReceipt.mockRejectedValue(
+        new Error("Procurement sync failed"),
+      );
+
+      const mockGrn = {
+        id: "grn-1",
+        purchaseOrderId: poId,
+        supplierId,
+        receivedBy: "Dock Clerk",
+        status: "COMPLETE",
+      };
+      const mockItems = [
+        {
+          id: "item-1",
+          grnId: "grn-1",
+          expectedDeliveryId: null,
+          sku: "BOLT-STEEL-M8",
+          orderedQuantity: 50,
+          receivedQuantity: 20,
+          damagedQuantity: 2,
+          conditionNotes: "2 units damaged",
+        },
+      ];
+      mockReceivingRepo.createGrnWithItems.mockResolvedValue({
+        grn: mockGrn,
+        items: mockItems,
+      });
+
+      await expect(service.createGoodsReceivedNote(dto)).resolves.toMatchObject(
+        {
+          id: "grn-1",
+          status: "COMPLETE",
+        },
+      );
+      expect(mockReceivingRepo.createGrnWithItems).toHaveBeenCalled();
+      expect(publishGoodsReceived).toHaveBeenCalledWith(
+        expect.objectContaining({ quantity: 18 }),
+      );
+    });
+
     it("throws NotFoundError when PO does not exist in Procurement", async () => {
       mockProcurementClient.getPurchaseOrder.mockResolvedValue(null);
 

@@ -102,20 +102,27 @@ export class ReceivingService {
       throw new Error("Failed to record Goods Received Note header");
     }
 
-    for (const item of preparedItems) {
-      if (item.sellableQuantity > 0) {
-        await publishGoodsReceived({
-          grnId: grn.id,
-          purchaseOrderId: dto.purchaseOrderId,
-          sku: item.sku,
-          quantity: item.sellableQuantity,
-        });
+    try {
+      for (const item of preparedItems) {
+        if (item.sellableQuantity > 0) {
+          await publishGoodsReceived({
+            grnId: grn.id,
+            purchaseOrderId: dto.purchaseOrderId,
+            sku: item.sku,
+            quantity: item.sellableQuantity,
+          });
 
-        await this.procurementClient.recordReceipt(
-          dto.purchaseOrderId,
-          item.sellableQuantity,
-        );
+          await this.procurementClient.recordReceipt(
+            dto.purchaseOrderId,
+            item.sellableQuantity,
+          );
+        }
       }
+    } catch (error) {
+      console.warn(
+        `GRN ${grn.id} was recorded locally, but downstream procurement sync failed:`,
+        error,
+      );
     }
 
     return {
