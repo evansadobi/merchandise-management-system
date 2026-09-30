@@ -1,0 +1,706 @@
+openapi: 3.0.3
+info:
+  title: Retail Sales Service API
+  version: 1.0.0
+  description: >
+    Manages checkout transactions, price lookups, stock reservation, payment
+    capture, and returns for in-store retail. POS validates inventory in real
+    time using the Inventory gRPC service before a sale is committed, then
+    emits ItemSold events for downstream auditing and accounting.
+
+x-events:
+  - name: ItemSold
+    stream: retail-sales.events
+    description: Published after a sale is fully paid and committed.
+    payload:
+      $ref: "#/components/schemas/ItemSoldEvent"
+
+components:
+  schemas:
+    Price:
+      type: object
+      required:
+        - sku
+        - storeId
+        - price
+        - currency
+        - effectiveFrom
+        - active
+      properties:
+        sku:
+          type: string
+          example: "SKU-001"
+        storeId:
+          type: string
+          example: "STORE-03"
+        price:
+          type: string
+          example: "249.00"
+        currency:
+          type: string
+          example: "KES"
+        effectiveFrom:
+          type: string
+          format: date-time
+        effectiveTo:
+          type: string
+          format: date-time
+          nullable: true
+        active:
+          type: boolean
+          example: true
+
+    Promotion:
+      type: object
+      required:
+        - id
+        - sku
+        - storeId
+        - type
+        - discountAmount
+        - active
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        storeId:
+          type: string
+        type:
+          type: string
+          enum: [PERCENT_OFF, FLAT_DISCOUNT, BUNDLE]
+        discountAmount:
+          type: string
+          example: "10.00"
+        minQty:
+          type: integer
+          nullable: true
+        priority:
+          type: integer
+          example: 1
+        active:
+          type: boolean
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    SaleItem:
+      type: object
+      required:
+        - sku
+        - qty
+        - unitPrice
+        - lineTotal
+      properties:
+        sku:
+          type: string
+        qty:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: string
+          example: "120.00"
+        discount:
+          type: string
+          example: "0.00"
+        lineTotal:
+          type: string
+          example: "120.00"
+
+    Payment:
+      type: object
+      required:
+        - id
+        - saleId
+        - tenderType
+        - amount
+        - currency
+        - processedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        saleId:
+          type: string
+        tenderType:
+          type: string
+          enum: [CASH, CARD, GIFT_CARD, MIXED]
+        amount:
+          type: string
+          example: "120.00"
+        currency:
+          type: string
+          example: "KES"
+        referenceId:
+          type: string
+          nullable: true
+        processedAt:
+          type: string
+          format: date-time
+
+    Sale:
+      type: object
+      required:
+        - id
+        - saleId
+        - storeId
+        - registerId
+        - cashierId
+        - customerId
+        - items
+        - total
+        - currency
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        saleId:
+          type: string
+          example: "SALE-1001"
+        storeId:
+          type: string
+          example: "STORE-03"
+        registerId:
+          type: string
+          example: "REG-02"
+        cashierId:
+          type: string
+          example: "CASHIER-17"
+        customerId:
+          type: string
+          example: "CUST-778"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleItem"
+        total:
+          type: string
+          example: "120.00"
+        currency:
+          type: string
+          example: "KES"
+        status:
+          type: string
+          enum: [PENDING_PAYMENT, COMPLETED, VOIDED, REFUNDED]
+        paymentMethod:
+          type: string
+          nullable: true
+          enum: [CASH, CARD, GIFT_CARD, MIXED]
+        createdAt:
+          type: string
+          format: date-time
+
+    ReturnItem:
+      type: object
+      required:
+        - sku
+        - qty
+        - unitPrice
+        - reason
+        - refundAmount
+      properties:
+        sku:
+          type: string
+        qty:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: string
+          example: "120.00"
+        reason:
+          type: string
+          example: "Damaged item"
+        refundAmount:
+          type: string
+          example: "120.00"
+
+    Return:
+      type: object
+      required:
+        - id
+        - originalSaleId
+        - storeId
+        - registerId
+        - cashierId
+        - items
+        - totalRefund
+        - currency
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        originalSaleId:
+          type: string
+        storeId:
+          type: string
+        registerId:
+          type: string
+        cashierId:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnItem"
+        totalRefund:
+          type: string
+          example: "120.00"
+        currency:
+          type: string
+          example: "KES"
+        status:
+          type: string
+          enum: [PENDING_REFUND, COMPLETED]
+        createdAt:
+          type: string
+          format: date-time
+
+    ItemSoldEvent:
+      type: object
+      required:
+        - event
+        - timestamp
+        - data
+      properties:
+        event:
+          type: string
+          example: "ItemSold"
+        timestamp:
+          type: string
+          format: date-time
+        data:
+          type: object
+          required:
+            - transactionId
+            - storeId
+            - registerId
+            - cashierId
+            - items
+            - total
+            - currency
+            - paymentMethod
+            - timestamp
+          properties:
+            transactionId:
+              type: string
+            storeId:
+              type: string
+            registerId:
+              type: string
+            cashierId:
+              type: string
+            items:
+              type: array
+              items:
+                type: object
+                required:
+                  - sku
+                  - qty
+                  - unitPrice
+                  - lineTotal
+                properties:
+                  sku:
+                    type: string
+                  qty:
+                    type: integer
+                  unitPrice:
+                    type: string
+                  discount:
+                    type: string
+                    nullable: true
+                  lineTotal:
+                    type: string
+            total:
+              type: string
+            currency:
+              type: string
+            paymentMethod:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+
+    Pagination:
+      type: object
+      required:
+        - page
+        - limit
+        - total
+        - totalPages
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        totalPages:
+          type: integer
+          example: 3
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+  parameters:
+    SkuParam:
+      name: sku
+      in: path
+      required: true
+      schema:
+        type: string
+    SaleIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ReturnIdParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 20
+
+paths:
+  /health:
+    get:
+      summary: Health check for the Retail Sales service
+      responses:
+        "200":
+          description: Service status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: retail-sales-service
+
+  /api/prices:
+    get:
+      summary: Retrieve all active retail prices
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: A paginated list of price records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Price"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  /api/prices/{sku}:
+    get:
+      summary: Get the active price for a SKU
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      responses:
+        "200":
+          description: The price record for the SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Price"
+        "404":
+          description: No active price found for the SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/prices/{sku}/promotions:
+    get:
+      summary: Get active promotions for a SKU
+      parameters:
+        - $ref: "#/components/parameters/SkuParam"
+      responses:
+        "200":
+          description: Active promotions for the SKU.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Promotion"
+
+  /api/sales:
+    post:
+      summary: Create a sale and reserve inventory lines
+      description: >
+        Creates a sale in PENDING_PAYMENT state and reserves stock for each line
+        through the Inventory gRPC ReserveStock call. If any line is unavailable,
+        the request fails and no reservation is committed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - saleId
+                - storeId
+                - registerId
+                - cashierId
+                - customerId
+                - items
+                - paymentMethod
+              properties:
+                saleId:
+                  type: string
+                storeId:
+                  type: string
+                registerId:
+                  type: string
+                cashierId:
+                  type: string
+                customerId:
+                  type: string
+                items:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/SaleItem"
+                paymentMethod:
+                  type: string
+                  enum: [CASH, CARD, GIFT_CARD, MIXED]
+                currency:
+                  type: string
+                  example: "KES"
+      responses:
+        "201":
+          description: Sale created and inventory reserved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sale"
+        "400":
+          description: Invalid sale payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A reservation conflict or duplicate sale ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      summary: List sales
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated list of sale records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Sale"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  /api/sales/{id}:
+    get:
+      summary: Fetch a sale by ID
+      parameters:
+        - $ref: "#/components/parameters/SaleIdParam"
+      responses:
+        "200":
+          description: Sale record retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sale"
+        "404":
+          description: Sale not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/sales/{id}/payments:
+    post:
+      summary: Record payment and finalize the sale
+      description: >
+        Records the tender received, calls the Inventory gRPC CommitSale
+        endpoint, marks the sale COMPLETED, and publishes the ItemSold event.
+      parameters:
+        - $ref: "#/components/parameters/SaleIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tenderType
+                - amount
+                - currency
+              properties:
+                tenderType:
+                  type: string
+                  enum: [CASH, CARD, GIFT_CARD, MIXED]
+                amount:
+                  type: string
+                  example: "120.00"
+                currency:
+                  type: string
+                  example: "KES"
+                referenceId:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Sale successfully completed and paid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sale"
+        "400":
+          description: Invalid payment payload or mismatch with total.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Sale is already completed or inventory commit failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/sales/{id}/void:
+    post:
+      summary: Void a pending or completed sale
+      description: >
+        Calls the Inventory gRPC ReleaseReservation flow to release reserved
+        stock and marks the sale as VOIDED. No ItemSold event is published.
+      parameters:
+        - $ref: "#/components/parameters/SaleIdParam"
+      responses:
+        "200":
+          description: Sale voided and reservation released.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sale"
+        "404":
+          description: Sale not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/returns:
+    post:
+      summary: Create a return for a sale
+      description: >
+        Links to an original sale, validates line items, and publishes a
+        SaleReturned event while restoring stock if the return is approved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - originalSaleId
+                - storeId
+                - registerId
+                - cashierId
+                - items
+              properties:
+                originalSaleId:
+                  type: string
+                storeId:
+                  type: string
+                registerId:
+                  type: string
+                cashierId:
+                  type: string
+                items:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ReturnItem"
+                reason:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: Return record created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Return"
+        "400":
+          description: Invalid return payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/returns/{id}:
+    get:
+      summary: Fetch a return by ID
+      parameters:
+        - $ref: "#/components/parameters/ReturnIdParam"
+      responses:
+        "200":
+          description: Return record retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Return"
+        "404":
+          description: Return not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
