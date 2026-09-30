@@ -62,17 +62,17 @@ As Phase 3–4 modules (Retail Sales, Sales Audit, Financials) are built, this d
 
 ## 3. Module Directory
 
-| Module               | Directory                       | Purpose                                                                                                         | Phase          | Status                                                              |
-| -------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------- |
-| Vendor Management    | `services/vendor-service`       | Authoritative record of suppliers, their approved products/pricing, and payment terms                           | 1 (Foundation) | Complete                                                            |
-| Procurement          | `services/procurement-service`  | Purchase order lifecycle, approval workflow, cost/terms locking, publishes `PurchaseOrderApproved`              | 1 (Foundation) | Complete                                                            |
-| Inventory            | `services/inventory-service`    | Single source of truth for stock (On Hand / Allocated / On Order), valuation, reservation, publishes `StockLow` | 1 (Foundation) | Complete                                                            |
-| Receiving            | `services/receiving-service`    | Validates incoming goods against POs, generates GRNs, publishes `GoodsReceived`                                 | 2 (Warehouse)  | Complete                                                            |
-| Warehouse Operations | `services/warehouse-service`    | Bin hierarchy, velocity-based slotting, putaway/picking tasks, stock transfers                                  | 2 (Warehouse)  | Complete                                                            |
-| Retail Sales (POS)   | `services/retail-sales-service` | Checkout transactions, pricing, returns, publishes `ItemSold`                                                   | 3 (Retail)     | Not started                                                         |
-| Sales Audit          | `services/sales-audit-service`  | Cash drawer reconciliation, publishes `DayClosed`                                                               | 3 (Retail)     | Not started                                                         |
-| Financials           | `services/financials-service`   | Automated ledger, accounts payable, P&L reporting                                                               | 4 (Accounting) | Not started                                                         |
-| Frontend             | `services/frontend`             | Unified React dashboard shell — one view per completed module, "Coming Soon" for the rest                       | —              | Vendor, Procurement, Inventory, Receiving, Warehouse views complete |
+| Module               | Directory                       | Purpose                                                                                                         | Phase          | Status                                                                                                     |
+| -------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------- |
+| Vendor Management    | `services/vendor-service`       | Authoritative record of suppliers, their approved products/pricing, and payment terms                           | 1 (Foundation) | Complete                                                                                                   |
+| Procurement          | `services/procurement-service`  | Purchase order lifecycle, approval workflow, cost/terms locking, publishes `PurchaseOrderApproved`              | 1 (Foundation) | Complete                                                                                                   |
+| Inventory            | `services/inventory-service`    | Single source of truth for stock (On Hand / Allocated / On Order), valuation, reservation, publishes `StockLow` | 1 (Foundation) | Complete                                                                                                   |
+| Receiving            | `services/receiving-service`    | Validates incoming goods against POs, generates GRNs, publishes `GoodsReceived`                                 | 2 (Warehouse)  | Complete                                                                                                   |
+| Warehouse Operations | `services/warehouse-service`    | Bin hierarchy, velocity-based slotting, putaway/picking tasks, stock transfers                                  | 2 (Warehouse)  | Complete                                                                                                   |
+| Retail Sales (POS)   | `services/retail-sales-service` | Checkout transactions, pricing, returns, publishes `ItemSold`                                                   | 3 (Retail)     | Complete                                                                                                   |
+| Sales Audit          | `services/sales-audit-service`  | Cash drawer reconciliation, publishes `DayClosed`                                                               | 3 (Retail)     | Complete                                                                                                   |
+| Financials           | `services/financials-service`   | Automated ledger, journal entries, and running balance reconciliation for sales and close-out events            | 4 (Accounting) | Complete                                                                                                   |
+| Frontend             | `services/frontend`             | Unified React dashboard shell — one view per completed module, "Coming Soon" for the rest                       | —              | Vendor, Procurement, Inventory, Receiving, Warehouse, Retail Sales, Sales Audit, Financials views complete |
 
 ## 4. Repository Structure
 
@@ -84,7 +84,10 @@ This is an npm-workspaces monorepo. The root `package.json` declares each backen
   "services/procurement-service",
   "services/inventory-service",
   "services/receiving-service",
-  "services/warehouse-service"
+  "services/warehouse-service",
+  "services/retail-sales-service",
+  "services/sales-audit-service",
+  "services/financials-service"
 ]
 ```
 
@@ -103,21 +106,25 @@ Because of the workspaces setup, dependency installs and root-level test orchest
 docker compose up -d
 ```
 
-This starts all five databases, Redis, and all five backend services together, networked via the compose file's service names (e.g. `vendor-service` reaches Postgres at `vendor-db:5432`).
+This starts all seven databases, Redis, and all seven backend services together, networked via the compose file's service names (e.g. `vendor-service` reaches Postgres at `vendor-db:5432`).
 
 ### Option B — run a service locally against its containerized database (typical for active development)
 
 ```bash
 # from the repo root
 docker compose up \
-  vendor-db procurement-db inventory-db receiving-db warehouse-db redis -d
+  vendor-db procurement-db inventory-db receiving-db warehouse-db \
+  retail-sales-db sales-audit-db redis -d
 
 # then, in separate terminals:
-cd services/vendor-service && npm run dev         # :3001
-cd services/procurement-service && npm run dev    # :3002
-cd services/inventory-service && npm run dev      # :3003
-cd services/receiving-service && npm run dev      # :3004
-cd services/warehouse-service && npm run dev       # :3005
+cd services/vendor-service && npm run dev             # :3001
+cd services/procurement-service && npm run dev      # :3002
+cd services/inventory-service && npm run dev          # :3003
+cd services/receiving-service && npm run dev          # :3004
+cd services/warehouse-service && npm run dev          # :3005
+cd services/retail-sales-service && npm run dev       # :3006
+cd services/sales-audit-service && npm run dev        # :3007
+cd services/financials-service && npm run dev        # :3008
 ```
 
 ### Frontend
@@ -229,7 +236,7 @@ Each publisher uses a documented, deliberate simplification: a failed publish is
 - **Warehouse Ops falls back across zones on capacity exhaustion.** If the target zone is full, the service picks any zone with room — ordered alphabetically, so a HIGH-velocity SKU falling back from FAST may land in BULK rather than MID. This is deliberate degradation, not a bug; the API response includes a `reason` string explaining the choice.
 - **Inventory's `locationId` is coarse-grained** (`"MAIN_WAREHOUSE"`, `"STORE_3_BACKROOM"`). Bin-level granularity lives entirely inside Warehouse Ops (`stock_placements` + `bins`), so Inventory does not know which bin a unit is sitting in. This is a deliberate domain boundary — Inventory answers "how much do we own?", Warehouse Ops answers "where in the building is it?".
 - **Vendor `approvedBy` is captured at the UI but not persisted.** The frontend records who approved a new vendor in the success message, but the Vendor schema does not yet have an `approvedBy` column. Recording the approver identity for audit is a small future addition.
-- Phase 3–4 modules are not yet built; their event contracts (`ItemSold`, `DayClosed`) are specified in this project's brief but have no implementation yet.
+- The Phase 3–4 modules are implemented: Retail Sales publishes `ItemSold`, Sales Audit consumes it and emits `DayClosed`, and Financials consumes both streams to post accounting journal entries and maintain ledger balances.
 
 ## 10. Warehouse Operations — Design Notes
 

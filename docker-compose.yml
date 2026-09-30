@@ -96,6 +96,57 @@ services:
       timeout: 5s
       retries: 5
 
+  retail-sales-db:
+    image: postgres:15-alpine
+    container_name: mms_retail_sales_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: retail_sales_db
+    ports:
+      - "5438:5432"
+    volumes:
+      - retail_sales_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d retail_sales_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  sales-audit-db:
+    image: postgres:15-alpine
+    container_name: mms_sales_audit_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: sales_audit_db
+    ports:
+      - "5439:5432"
+    volumes:
+      - sales_audit_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sales_audit_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  financials-db:
+    image: postgres:15-alpine
+    container_name: mms_financials_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: financials_db
+    ports:
+      - "5440:5432"
+    volumes:
+      - financials_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d financials_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   vendor-service:
     build: ./services/vendor-service
     container_name: mms_vendor_service
@@ -133,8 +184,10 @@ services:
     container_name: mms_inventory_service
     ports:
       - "3003:3003"
+      - "50051:50051"
     environment:
       - PORT=3003
+      - GRPC_PORT=50051
       - DATABASE_URL=postgres://postgres:password@inventory-db:5432/inventory_db
       - REDIS_URL=redis://redis:6379
       - FEATURE_INVENTORY=true
@@ -182,9 +235,60 @@ services:
       redis:
         condition: service_healthy
 
+  retail-sales-service:
+    build: ./services/retail-sales-service
+    container_name: mms_retail_sales_service
+    ports:
+      - "3006:3006"
+    environment:
+      - PORT=3006
+      - DATABASE_URL=postgres://postgres:password@retail-sales-db:5432/retail_sales_db
+      - REDIS_URL=redis://redis:6379
+      - FEATURE_RETAIL_SALES=true
+    depends_on:
+      retail-sales-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  sales-audit-service:
+    build: ./services/sales-audit-service
+    container_name: mms_sales_audit_service
+    ports:
+      - "3007:3007"
+    environment:
+      - PORT=3007
+      - DATABASE_URL=postgres://postgres:password@sales-audit-db:5432/sales_audit_db
+      - REDIS_URL=redis://redis:6379
+      - FEATURE_SALES_AUDIT=true
+    depends_on:
+      sales-audit-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  financials-service:
+    build: ./services/financials-service
+    container_name: mms_financials_service
+    ports:
+      - "3008:3008"
+    environment:
+      - PORT=3008
+      - DATABASE_URL=postgres://postgres:password@financials-db:5432/financials_db
+      - REDIS_URL=redis://redis:6379
+      - FEATURE_FINANCIALS=true
+    depends_on:
+      financials-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   vendor_data:
   procurement_data:
   inventory_data:
   receiving_data:
   warehouse_data:
+  retail_sales_data:
+  sales_audit_data:
+  financials_data:
