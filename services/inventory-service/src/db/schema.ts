@@ -6,6 +6,7 @@ import {
   decimal,
   timestamp,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 
 export const inventoryItems = pgTable(
@@ -51,5 +52,38 @@ export const inventoryItems = pgTable(
       table.sku,
       table.locationId,
     ),
+  }),
+);
+
+export const inventoryReservations = pgTable(
+  "inventory_reservations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    saleId: varchar("sale_id", { length: 100 }).notNull(),
+
+    sku: varchar("sku", { length: 100 }).notNull(),
+
+    locationId: varchar("location_id", { length: 100 })
+      .notNull()
+      .default("MAIN_WAREHOUSE"),
+
+    quantity: integer("quantity").notNull(),
+
+    status: varchar("status", { length: 20 }).notNull().default("RESERVED"),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .notNull()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => ({
+    saleSkuLocationUnique: unique(
+      "inventory_reservations_sale_sku_loc_unique",
+    ).on(table.saleId, table.sku, table.locationId),
+    saleIdIdx: index("inventory_reservations_sale_idx").on(table.saleId),
+    statusIdx: index("inventory_reservations_status_idx").on(table.status),
   }),
 );

@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { AlertTriangle, ArrowDownToLine, ClipboardCheck, ShieldCheck } from 'lucide-react';
 import DataTable, { type Column } from '../components/DataTable';
 import { Banner, Field, Modal, Pill, inputCls } from '../components/ui';
 import { api } from '../api';
@@ -51,9 +52,9 @@ interface Vendor {
   status: string;
 }
 
-const RECEIVING_API = 'http://localhost:3004/api';
-const PROCUREMENT_API = 'http://localhost:3002/api';
-const VENDOR_API = 'http://localhost:3001/api/vendors';
+const RECEIVING_API = `${import.meta.env.VITE_RECEIVING_API ?? 'http://localhost:3004'}/api`;
+const PROCUREMENT_API = `${import.meta.env.VITE_PROCUREMENT_API ?? 'http://localhost:3002'}/api`;
+const VENDOR_API = `${import.meta.env.VITE_VENDOR_API ?? 'http://localhost:3001'}/api/vendors`;
 
 const DOCK_WORKERS = [
   'Dock Worker Alice',
@@ -62,11 +63,11 @@ const DOCK_WORKERS = [
   'Dock Worker Dan',
 ];
 
-const grnTone = { COMPLETE: 'green', DISCREPANCY: 'yellow' } as const;
-
-
 /** #F84B — short, uppercase, greppable. */
 const tag = (id: string) => `#${id.slice(0, 4).toUpperCase()}`;
+const shortPoRef = (id: string) => `PO-${id.slice(0, 8).toUpperCase()}`;
+const shortenPurchaseOrderText = (text: string) =>
+  text.replace(/Purchase order\s+([a-f0-9-]{36})/gi, (_, id: string) => shortPoRef(id));
 
 /** Turn a GRN's items into one plain-English phrase. */
 function itemsSummary(items: ReceivingItem[]): {
@@ -110,6 +111,7 @@ export default function ReceivingView() {
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedGrn, setSelectedGrn] = useState<GRN | null>(null);
+  const [livePurchaseOrder, setLivePurchaseOrder] = useState<PurchaseOrder | null>(null);
 
   const [form, setForm] = useState({
     expectedDeliveryId: '',
@@ -169,13 +171,68 @@ export default function ReceivingView() {
   const vendorName = (id: string) =>
     vendors.find((v) => v.id === id)?.name ?? `${id.slice(0, 8)}…`;
 
+  const metrics = [
+    {
+      label: 'Open deliveries',
+      value: String(expectedDeliveries.length),
+      tone: 'blue',
+      icon: ArrowDownToLine,
+    },
+    {
+      label: 'GRNs logged',
+      value: String(grns.length),
+      tone: 'slate',
+      icon: ClipboardCheck,
+    },
+    {
+      label: 'Discrepancies',
+      value: String(grns.filter((entry) => entry.status === 'DISCREPANCY').length),
+      tone: 'amber',
+      icon: AlertTriangle,
+    },
+    {
+      label: 'Sellable units',
+      value: String(grns.reduce((total, entry) => total + entry.items.reduce((sum, item) => sum + item.sellableQuantity, 0), 0)),
+      tone: 'green',
+      icon: ShieldCheck,
+    },
+  ];
+
   const selectedDelivery = expectedDeliveries.find((d) => d.id === form.expectedDeliveryId);
 
+  useEffect(() => {
+    if (!selectedDelivery) {
+      setLivePurchaseOrder(null);
+      return;
+    }
+
+    let isCurrent = true;
+    api<PurchaseOrder>(`${PROCUREMENT_API}/purchase-orders/${selectedDelivery.purchaseOrderId}`)
+      .then((po) => {
+        if (isCurrent) setLivePurchaseOrder(po);
+      })
+      .catch(() => {
+        if (isCurrent) setLivePurchaseOrder(null);
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [selectedDelivery]);
+
   const remainingQuantity = selectedDelivery
-    ? Math.max(0, selectedDelivery.quantityExpected - selectedDelivery.quantityReceivedSoFar)
+    ? Math.max(
+        0,
+        (livePurchaseOrder
+          ? livePurchaseOrder.quantityOrdered - livePurchaseOrder.quantityReceived
+          : selectedDelivery.quantityExpected - selectedDelivery.quantityReceivedSoFar),
+      )
     : null;
 
-  
+  const receivedSoFar = selectedDelivery
+    ? (livePurchaseOrder?.quantityReceived ?? selectedDelivery.quantityReceivedSoFar)
+    : 0;
+
   const resolveSupplierId = async (delivery: ExpectedDelivery): Promise<string> => {
     if (delivery.supplierId) return delivery.supplierId;
 
@@ -196,6 +253,11 @@ export default function ReceivingView() {
 
     if (!selectedDelivery) {
       setFormError('Select an expected delivery first.');
+      return;
+    }
+
+    if (remainingQuantity === 0) {
+      setFormError(`${shortPoRef(selectedDelivery.purchaseOrderId)} is already fully received — no further deliveries expected.`);
       return;
     }
 
@@ -256,11 +318,12 @@ export default function ReceivingView() {
       await Promise.all([loadGrns(), loadExpectedDeliveries()]);
     } catch (err: any) {
       const raw: string = err?.message ?? 'Failed to record GRN';
-      const cleaned = raw.replace(
-        /^(ConflictError|ValidationError|NotFoundError):\s*/,
-        '',
+      const cleaned = shortenPurchaseOrderText(
+        raw
+          .replace(/^(ConflictError|ValidationError|NotFoundError):\s*/i, '')
+          .replace(/^\s+|\s+$/g, ''),
       );
-      setFormError(cleaned);
+      setFormError(cleaned || 'Failed to record GRN');
     } finally {
       setSubmitting(false);
     }
@@ -340,54 +403,83 @@ export default function ReceivingView() {
   ];
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800">Receiving</h2>
-          <p className="text-sm text-slate-500">
-            
-          </p>
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-slate-200 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 p-5 text-white shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">Dock operations</p>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight">Receiving</h2>
+          </div>
+          <button
+            onClick={() => setShowCreate(true)}
+            disabled={expectedDeliveries.length === 0}
+            title={
+              expectedDeliveries.length === 0
+                ? 'No active expected deliveries to receive against'
+                : undefined
+            }
+            className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <ArrowDownToLine className="h-4 w-4" />
+            Record GRN
+          </button>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          disabled={expectedDeliveries.length === 0}
-          title={
-            expectedDeliveries.length === 0
-              ? 'No active expected deliveries to receive against'
-              : undefined
-          }
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          + Record GRN
-        </button>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {metrics.map((metric) => {
+          const Icon = metric.icon;
+          const toneClass = {
+            blue: 'bg-blue-100 text-blue-700',
+            slate: 'bg-slate-100 text-slate-700',
+            amber: 'bg-amber-100 text-amber-700',
+            green: 'bg-emerald-100 text-emerald-700',
+          }[metric.tone as 'blue' | 'slate' | 'amber' | 'green'];
+
+          return (
+            <div key={metric.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400">{metric.label}</p>
+                  <p className="mt-2 text-2xl font-bold text-slate-900">{metric.value}</p>
+                </div>
+                <div className={`rounded-xl p-2 ${toneClass}`}>
+                  <Icon className="h-5 w-5" />
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {notice && (
         <Banner kind={notice.kind} text={notice.text} onClose={() => setNotice(null)} />
       )}
 
-      <DataTable
-        rows={grns}
-        columns={columns}
-        rowId={(g) => g.id}
-        noun="GRNs"
-        loading={loading}
-        error={error}
-        searchPlaceholder="Search GRN, PO, or receiver"
-        searchText={(g) =>
-          `${g.id} ${g.purchaseOrderId} ${g.receivedBy} ${vendorName(g.supplierId)}`
-        }
-        filters={[
-          {
-            label: 'All statuses',
-            options: [
-              { value: 'COMPLETE', label: 'Complete' },
-              { value: 'DISCREPANCY', label: 'Discrepancy' },
-            ],
-            predicate: (g, v) => g.status === v,
-          },
-        ]}
-      />
+      <div className="rounded-3xl border border-slate-200 bg-white p-3 shadow-sm">
+        <DataTable
+          rows={grns}
+          columns={columns}
+          rowId={(g) => g.id}
+          noun="GRNs"
+          loading={loading}
+          error={error}
+          searchPlaceholder="Search GRN, PO, or receiver"
+          searchText={(g) =>
+            `${g.id} ${g.purchaseOrderId} ${g.receivedBy} ${vendorName(g.supplierId)}`
+          }
+          filters={[
+            {
+              label: 'All statuses',
+              options: [
+                { value: 'COMPLETE', label: 'Complete' },
+                { value: 'DISCREPANCY', label: 'Discrepancy' },
+              ],
+              predicate: (g, v) => g.status === v,
+            },
+          ]}
+        />
+      </div>
 
       {showCreate && (
         <Modal title="Record Goods Received Note" onClose={() => setShowCreate(false)}>
@@ -400,12 +492,14 @@ export default function ReceivingView() {
                 onChange={(e) => setForm({ ...form, expectedDeliveryId: e.target.value })}
               >
                 <option value="">— Select an expected delivery —</option>
-                {expectedDeliveries.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.sku} · PO: {d.purchaseOrderId.slice(0, 8)}… ·{' '}
-                    {d.quantityExpected - d.quantityReceivedSoFar} remaining
-                  </option>
-                ))}
+                {expectedDeliveries.map((d) => {
+                  const remaining = d.quantityExpected - d.quantityReceivedSoFar;
+                  return (
+                    <option key={d.id} value={d.id}>
+                      {d.sku} · {shortPoRef(d.purchaseOrderId)} · {remaining} remaining to receive
+                    </option>
+                  );
+                })}
               </select>
             </Field>
 
@@ -416,15 +510,15 @@ export default function ReceivingView() {
                   <span className="font-mono">{selectedDelivery.sku}</span>
                 </div>
                 <div>
-                  <span className="font-semibold">PO ID:</span>{' '}
-                  <span className="font-mono">{selectedDelivery.purchaseOrderId}</span>
+                  <span className="font-semibold">Purchase order:</span>{' '}
+                  <span className="font-mono">{shortPoRef(selectedDelivery.purchaseOrderId)}</span>
                 </div>
                 <div>
-                  <span className="font-semibold">Expected:</span>{' '}
-                  {selectedDelivery.quantityExpected} ·{' '}
-                  <span className="font-semibold">Received so far:</span>{' '}
-                  {selectedDelivery.quantityReceivedSoFar} ·{' '}
-                  <span className="font-semibold">Remaining:</span> {remainingQuantity}
+                  <span className="font-semibold">Expected total:</span>{' '}
+                  {selectedDelivery.quantityExpected} units ·{' '}
+                  <span className="font-semibold">Received:</span>{' '}
+                  {receivedSoFar} ·{' '}
+                  <span className="font-semibold">Still to receive:</span> {remainingQuantity} units
                 </div>
               </div>
             )}
@@ -446,7 +540,7 @@ export default function ReceivingView() {
 
             <div className="grid grid-cols-2 gap-4">
               <Field
-                label={`Received quantity${
+                label={`Qty to receive now${
                   remainingQuantity != null ? ` (remaining: ${remainingQuantity})` : ''
                 }`}
               >
@@ -460,7 +554,7 @@ export default function ReceivingView() {
                   onChange={(e) => setForm({ ...form, receivedQuantity: e.target.value })}
                 />
               </Field>
-              <Field label="Damaged quantity (subset of received)">
+              <Field label="Damaged units">
                 <input
                   type="number"
                   min={0}

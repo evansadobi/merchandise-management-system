@@ -6,16 +6,23 @@
     "services/vendor-service",
     "services/procurement-service",
     "services/inventory-service",
-        "services/receiving-service",
-       "services/warehouse-service"
-
-
+    "services/receiving-service",
+    "services/warehouse-service",
+    "services/retail-sales-service",
+    "services/sales-audit-service",
+    "services/financials-service"
   ],
   "scripts": {
     "dev:vendor": "npm --prefix services/vendor-service run dev",
     "dev:procurement": "npm --prefix services/procurement-service run dev",
     "dev:inventory": "npm --prefix services/inventory-service run dev",
-        "dev:receiving": "npm --prefix services/receiving-service run dev"
-
+    "dev:receiving": "npm --prefix services/receiving-service run dev",
+    "dev:retail-sales": "npm --prefix services/retail-sales-service run dev",
+    "dev:sales-audit": "npm --prefix services/sales-audit-service run dev",
+    "dev:financials": "npm --prefix services/financials-service run dev"
+  },
+  "devDependencies": {
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1"
   }
 }

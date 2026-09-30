@@ -1,25 +1,15 @@
 import { InventoryRepository } from "../repositories/InventoryRepository.js";
 import { publishStockLow } from "../events/eventPublisher.js";
-import { NotFoundError, BadRequestError } from "../types.js";
-
-const DEFAULT_LOCATION = "MAIN_WAREHOUSE";
+import { BadRequestError, NotFoundError } from "../types.js";
 
 export class InventoryService {
   constructor(
-    private inventoryRepo: InventoryRepository = new InventoryRepository(),
+    private readonly inventoryRepository: InventoryRepository = new InventoryRepository(),
   ) {}
 
-  private resolveLocation(locationId?: string) {
-    return locationId && locationId.trim() !== ""
-      ? locationId.trim()
-      : DEFAULT_LOCATION;
-  }
-
   async listItems(page = 1, limit = 20) {
-    const [data, total] = await Promise.all([
-      this.inventoryRepo.findAll(page, limit),
-      this.inventoryRepo.count(),
-    ]);
+    const data = await this.inventoryRepository.findAll(page, limit);
+    const total = await this.inventoryRepository.count();
 
     return {
       data,
@@ -27,92 +17,119 @@ export class InventoryService {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limit) || 1,
       },
     };
   }
 
   async getItemById(id: string) {
-    const item = await this.inventoryRepo.findById(id);
+    const item = await this.inventoryRepository.findById(id);
     if (!item) {
-      throw new NotFoundError(`Inventory item with id ${id} not found`);
+      throw new NotFoundError(`Inventory item with id ${id} not found.`);
     }
     return item;
   }
 
   async getItemsBySku(sku: string) {
-    const items = await this.inventoryRepo.findBySku(sku);
-    if (items.length === 0) {
-      throw new NotFoundError(
-        `No inventory record found for SKU ${sku} at any location`,
-      );
+    const rows = await this.inventoryRepository.findBySku(sku);
+    if (!rows.length) {
+      throw new NotFoundError(`No inventory rows found for SKU ${sku}.`);
     }
-    return items;
+    return rows;
   }
 
   async getLowStockItems() {
-    return this.inventoryRepo.findLowStock();
+    return await this.inventoryRepository.findLowStock();
   }
 
   async createItem(data: {
     productName: string;
     sku: string;
-    locationId?: string | undefined;
-    quantityOnHand?: number | undefined;
-    unitValue?: string | undefined;
-    reorderLevel?: number | undefined;
+    locationId?: string;
+    quantityOnHand?: number;
+    unitValue?: string;
+    reorderLevel?: number;
   }) {
-    return this.inventoryRepo.create(data);
+    return await this.inventoryRepository.create(data);
   }
 
-  async adjustStock(sku: string, delta: number, locationId?: string) {
-    const resolvedLocationId = this.resolveLocation(locationId);
-
-    const updated = await this.inventoryRepo.adjustOnHand(
+  async adjustStock(sku: string, delta: number, locationId = "MAIN_WAREHOUSE") {
+    const updated = await this.inventoryRepository.adjustOnHand(
       sku,
-      resolvedLocationId,
+      locationId,
       delta,
     );
 
     if (!updated) {
-      const existing = await this.inventoryRepo.findBySkuAndLocation(
+      const existing = await this.inventoryRepository.findBySkuAndLocation(
         sku,
-        resolvedLocationId,
+        locationId,
       );
-      if (!existing) {
-        throw new NotFoundError(
-          `Inventory item for SKU ${sku} not found at location ${resolvedLocationId}`,
+
+      if (existing === undefined) {
+        throw new BadRequestError(
+          `Cannot adjust stock for SKU ${sku} below zero at ${locationId}.`,
         );
       }
+
+      if (!existing) {
+        throw new NotFoundError(
+          `Inventory item for SKU ${sku} at location ${locationId} not found.`,
+        );
+      }
+
       throw new BadRequestError(
-        `Cannot reduce On Hand below zero (current: ${existing.quantityOnHand})`,
+        `Cannot adjust stock for SKU ${sku} below zero at ${locationId}.`,
       );
     }
 
-    await this.checkAndPublishLowStock(updated);
+    if (Number(updated.quantityOnHand) <= Number(updated.reorderLevel)) {
+      await publishStockLow({
+        sku,
+        locationId,
+        quantityOnHand: Number(updated.quantityOnHand),
+        reorderLevel: Number(updated.reorderLevel),
+      });
+    }
+
     return updated;
   }
 
-  async reserveStock(sku: string, quantity: number, locationId?: string) {
-    const resolvedLocationId = this.resolveLocation(locationId);
-
-    const updated = await this.inventoryRepo.allocate(
+  async reserveStock(
+    sku: string,
+    quantity: number,
+    locationId = "MAIN_WAREHOUSE",
+  ) {
+    const updated = await this.inventoryRepository.allocate(
       sku,
-      resolvedLocationId,
+      locationId,
       quantity,
     );
 
     if (!updated) {
-      const existing = await this.inventoryRepo.findBySkuAndLocation(
+      const existing = await this.inventoryRepository.findBySkuAndLocation(
         sku,
-        resolvedLocationId,
+        locationId,
       );
-      if (!existing) {
-        throw new NotFoundError(
-          `Inventory item for SKU ${sku} not found at location ${resolvedLocationId}`,
+
+      if (existing === undefined) {
+        const available = 0;
+        throw new BadRequestError(
+          `Insufficient available stock for SKU ${sku} (available: ${available})`,
         );
       }
-      const available = existing.quantityOnHand - existing.quantityAllocated;
+
+      if (!existing) {
+        throw new NotFoundError(
+          `Inventory item for SKU ${sku} at location ${locationId} not found.`,
+        );
+      }
+
+      const available = Math.max(
+        Number(existing.quantityOnHand) - Number(existing.quantityAllocated),
+        0,
+      );
+
       throw new BadRequestError(
         `Insufficient available stock for SKU ${sku} (available: ${available})`,
       );
@@ -121,70 +138,90 @@ export class InventoryService {
     return updated;
   }
 
-  async releaseReservation(sku: string, quantity: number, locationId?: string) {
-    const resolvedLocationId = this.resolveLocation(locationId);
-
-    const updated = await this.inventoryRepo.releaseAllocation(
+  async releaseReservation(
+    sku: string,
+    quantity: number,
+    locationId = "MAIN_WAREHOUSE",
+  ) {
+    const updated = await this.inventoryRepository.releaseAllocation(
       sku,
-      resolvedLocationId,
+      locationId,
       quantity,
     );
+
     if (!updated) {
       throw new NotFoundError(
-        `Inventory item for SKU ${sku} not found at location ${resolvedLocationId}`,
+        `Inventory item for SKU ${sku} at location ${locationId} not found.`,
       );
     }
+
     return updated;
   }
 
-  async commitSale(sku: string, quantity: number, locationId?: string) {
-    const resolvedLocationId = this.resolveLocation(locationId);
-
-    const updated = await this.inventoryRepo.commitSale(
+  async commitSale(
+    sku: string,
+    quantity: number,
+    locationId = "MAIN_WAREHOUSE",
+  ) {
+    const updated = await this.inventoryRepository.commitSale(
       sku,
-      resolvedLocationId,
+      locationId,
       quantity,
     );
 
     if (!updated) {
+      const existing = await this.inventoryRepository.findBySkuAndLocation(
+        sku,
+        locationId,
+      );
+
+      if (existing === undefined) {
+        throw new BadRequestError(
+          `Insufficient on-hand stock to sell ${quantity} units of SKU ${sku}.`,
+        );
+      }
+
+      if (!existing) {
+        throw new NotFoundError(
+          `Inventory item for SKU ${sku} at location ${locationId} not found.`,
+        );
+      }
+
       throw new BadRequestError(
-        `Cannot commit sale for SKU ${sku}: insufficient On Hand quantity`,
+        `Insufficient on-hand stock to sell ${quantity} units of SKU ${sku}.`,
       );
     }
 
-    await this.checkAndPublishLowStock(updated);
+    if (Number(updated.quantityOnHand) <= Number(updated.reorderLevel)) {
+      await publishStockLow({
+        sku,
+        locationId,
+        quantityOnHand: Number(updated.quantityOnHand),
+        reorderLevel: Number(updated.reorderLevel),
+      });
+    }
+
     return updated;
   }
 
   async updateAttributes(
     sku: string,
-    data: {
+    attributes: {
       weightKg?: string;
       volumeCm3?: number;
       salesVelocity?: "HIGH" | "MEDIUM" | "LOW";
     },
-    locationId?: string,
+    locationId = "MAIN_WAREHOUSE",
   ) {
-    const resolvedLocationId = this.resolveLocation(locationId);
-
-    const updated = await this.inventoryRepo.updateAttributes(
+    const updated = await this.inventoryRepository.updateAttributes(
       sku,
-      resolvedLocationId,
-      data,
+      locationId,
+      attributes,
     );
 
     if (!updated) {
-      const existing = await this.inventoryRepo.findBySkuAndLocation(
-        sku,
-        resolvedLocationId,
-      );
-      if (!existing) {
-        throw new NotFoundError(
-          `Inventory item for SKU ${sku} not found at location ${resolvedLocationId}`,
-        );
-      }
-      throw new BadRequestError(
-        "At least one attribute must be provided to update",
+      throw new NotFoundError(
+        `Inventory item for SKU ${sku} at location ${locationId} not found.`,
       );
     }
 
@@ -197,62 +234,182 @@ export class InventoryService {
     toLocationId: string,
     quantity: number,
   ) {
-    const from = this.resolveLocation(fromLocationId);
-    const to = this.resolveLocation(toLocationId);
+    if (fromLocationId === toLocationId) {
+      throw new BadRequestError("fromLocationId and toLocationId must differ");
+    }
+    if (quantity <= 0) {
+      throw new BadRequestError("quantity must be positive");
+    }
 
-    if (from === to) {
-      throw new BadRequestError(
-        `Source and destination locations must differ (both resolved to ${from})`,
+    const source = await this.inventoryRepository.findBySkuAndLocation(
+      sku,
+      fromLocationId,
+    );
+    if (!source) {
+      throw new NotFoundError(
+        `Inventory item for SKU ${sku} at location ${fromLocationId} not found.`,
       );
     }
 
-    const result = await this.inventoryRepo.transferStock(
+    const available =
+      Number(source.quantityOnHand) - Number(source.quantityAllocated);
+    if (quantity > available) {
+      throw new BadRequestError(
+        `Insufficient On Hand for SKU ${sku} at location ${fromLocationId} (available: ${available}).`,
+      );
+    }
+
+    return await this.inventoryRepository.transferStock(
       sku,
-      from,
-      to,
+      fromLocationId,
+      toLocationId,
       quantity,
     );
-
-    if (!result) {
-      // Disambiguate: does the source row exist at all?
-      const source = await this.inventoryRepo.findBySkuAndLocation(sku, from);
-      if (!source) {
-        throw new NotFoundError(
-          `Inventory item for SKU ${sku} not found at source location ${from}`,
-        );
-      }
-      throw new BadRequestError(
-        `Insufficient On Hand at ${from} to transfer ${quantity} of ${sku} (available: ${source.quantityOnHand})`,
-      );
-    }
-
-    await this.checkAndPublishLowStock(result.source);
-    await this.checkAndPublishLowStock(result.destination);
-
-    return result;
   }
 
   async deleteItem(id: string) {
-    const deleted = await this.inventoryRepo.delete(id);
+    const deleted = await this.inventoryRepository.delete(id);
     if (!deleted) {
-      throw new NotFoundError(`Inventory item with id ${id} not found`);
+      throw new NotFoundError(`Inventory item with id ${id} not found.`);
     }
     return deleted;
   }
 
-  private async checkAndPublishLowStock(item: {
-    sku: string;
-    locationId: string;
-    quantityOnHand: number;
-    reorderLevel: number;
-  }) {
-    if (item.quantityOnHand <= item.reorderLevel) {
-      await publishStockLow({
-        sku: item.sku,
-        locationId: item.locationId,
-        quantityOnHand: item.quantityOnHand,
-        reorderLevel: item.reorderLevel,
-      });
+  async findStockLevel(sku: string, locationId: string) {
+    return await this.inventoryRepository.findStockLevel(sku, locationId);
+  }
+
+  async checkStock(sku: string, locationId: string, requestedQuantity: number) {
+    const stock = await this.inventoryRepository.findStockLevel(
+      sku,
+      locationId,
+    );
+    if (!stock) {
+      return {
+        stock: null,
+        isAvailable: false,
+      };
     }
+
+    const available = Math.max(
+      Number(stock.quantityOnHand) - Number(stock.quantityAllocated),
+      0,
+    );
+
+    return {
+      stock,
+      isAvailable: requestedQuantity > 0 && available >= requestedQuantity,
+    };
+  }
+
+  async batchCheckStock(
+    items: Array<{
+      sku: string;
+      locationId: string;
+      requestedQuantity: number;
+    }>,
+  ) {
+    return await Promise.all(
+      items.map(async (item) => {
+        const result = await this.checkStock(
+          item.sku,
+          item.locationId,
+          item.requestedQuantity,
+        );
+
+        return {
+          sku: item.sku,
+          stock: result.stock,
+          isAvailable: result.isAvailable,
+        };
+      }),
+    );
+  }
+
+  async reserveForSale(
+    saleId: string,
+    sku: string,
+    locationId: string,
+    quantity: number,
+  ) {
+    const result = await this.inventoryRepository.reserveForSale(
+      saleId,
+      sku,
+      locationId,
+      quantity,
+    );
+
+    if (result.kind === "reserved" || result.kind === "already_reserved") {
+      return {
+        reserved: true,
+        stock: result.level,
+        failureReason: "",
+      };
+    }
+
+    return {
+      reserved: false,
+      stock: result.level,
+      failureReason: "Insufficient stock available for reservation.",
+    };
+  }
+
+  async releaseForSale(saleId: string, sku: string, locationId: string) {
+    const result = await this.inventoryRepository.releaseForSale(
+      saleId,
+      sku,
+      locationId,
+    );
+
+    return {
+      released: result.kind === "released",
+      stock: result.level,
+    };
+  }
+
+  async commitForSale(
+    saleId: string,
+    sku: string,
+    locationId: string,
+    quantity: number,
+  ) {
+    const result = await this.inventoryRepository.commitForSale(
+      saleId,
+      sku,
+      locationId,
+      quantity,
+    );
+
+    if (result.kind === "committed") {
+      return {
+        committed: true,
+        stock: result.level,
+        failureReason: "",
+      };
+    }
+
+    if (result.kind === "quantity_mismatch") {
+      return {
+        committed: false,
+        stock: null,
+        failureReason: `Quantity mismatch. Reserved quantity is ${result.reserved}.`,
+      };
+    }
+
+    if (result.kind === "no_reservation") {
+      return {
+        committed: false,
+        stock: null,
+        failureReason: "No active reservation found for this sale.",
+      };
+    }
+
+    return {
+      committed: false,
+      stock: null,
+      failureReason: "Insufficient stock available to commit the sale.",
+    };
   }
 }
+
+export const inventoryService = new InventoryService();

@@ -3,6 +3,10 @@ import { createApp } from "./app.js";
 import { pool } from "./db/db.js";
 import { featureFlags } from "./config/featureFlags.js";
 import {
+  startInventoryGrpcServer,
+  stopInventoryGrpcServer,
+} from "./grpc/inventoryGrpcServer.js";
+import {
   startEventSubscriber,
   stopEventSubscriber,
 } from "./events/eventSubscriber.js";
@@ -25,6 +29,11 @@ const server = app.listen(PORT, () => {
       console.error("Failed to start event subscriber:", err);
       process.exit(1);
     });
+
+    startInventoryGrpcServer().catch((err) => {
+      console.error("Failed to start Inventory gRPC server:", err);
+      process.exit(1);
+    });
   }
 });
 
@@ -42,6 +51,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully...`);
   stopEventSubscriber();
+  stopInventoryGrpcServer();
   server.close(async () => {
     try {
       await pool.end();

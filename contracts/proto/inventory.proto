@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package mms.inventory.v1;
+
+service InventoryService {
+  rpc CheckStock(CheckStockRequest) returns (CheckStockResponse);
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+  rpc ReleaseReservation(ReleaseReservationRequest) returns (ReleaseReservationResponse);
+  rpc CommitSale(CommitSaleRequest) returns (CommitSaleResponse);
+  rpc BatchCheckStock(BatchCheckStockRequest) returns (BatchCheckStockResponse);
+}
+
+message StockLevel {
+  string sku = 1;
+  string location_id = 2;
+  int32 quantity_on_hand = 3;
+  int32 quantity_allocated = 4;
+  int32 quantity_available = 5;
+}
+
+message CheckStockRequest {
+  string sku = 1;
+  string location_id = 2;
+  int32 requested_quantity = 3;
+}
+
+message CheckStockResponse {
+  StockLevel stock = 1;
+  bool is_available = 2;
+}
+
+message BatchCheckStockRequest {
+  repeated CheckStockRequest items = 1;
+}
+
+message BatchCheckStockItemResult {
+  string sku = 1;
+  StockLevel stock = 2;
+  bool is_available = 3;
+}
+
+message BatchCheckStockResponse {
+  repeated BatchCheckStockItemResult results = 1;
+}
+
+message ReserveStockRequest {
+  string sale_id = 1;
+  string sku = 2;
+  string location_id = 3;
+  int32 quantity = 4;
+}
+
+message ReserveStockResponse {
+  bool reserved = 1;
+  StockLevel stock = 2;
+  string failure_reason = 3;
+}
+
+message ReleaseReservationRequest {
+  string sale_id = 1;
+  string sku = 2;
+  string location_id = 3;
+  int32 quantity = 4;
+}
+
+message ReleaseReservationResponse {
+  bool released = 1;
+  StockLevel stock = 2;
+}
+
+message CommitSaleRequest {
+  string sale_id = 1;
+  string sku = 2;
+  string location_id = 3;
+  int32 quantity = 4;
+}
+
+message CommitSaleResponse {
+  bool committed = 1;
+  StockLevel stock = 2;
+  string failure_reason = 3;
+}

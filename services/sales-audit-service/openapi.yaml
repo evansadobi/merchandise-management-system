@@ -1,0 +1,210 @@
+openapi: 3.0.3
+info:
+  title: Sales Audit Service API
+  version: 1.0.0
+  description: >
+    Reconciles expected sales totals against the physical cash and tender counts at a retail branch.
+    It consumes ItemSold events from the POS service, calculates expected totals by register, and
+    records the final close-out of a register after a manager signs off.
+
+x-events:
+  - name: DayClosed
+    stream: sales-audit.events
+    description: Emitted when a register is successfully closed and reconciled.
+    payload:
+      $ref: "#/components/schemas/DayClosedEvent"
+
+components:
+  schemas:
+    RegisterClosingRequest:
+      type: object
+      required:
+        - registerId
+        - storeId
+        - cashCount
+        - cardCount
+        - managerName
+      properties:
+        registerId:
+          type: string
+          example: "REG-02"
+        storeId:
+          type: string
+          example: "STORE-03"
+        cashCount:
+          type: string
+          example: "4950.00"
+        cardCount:
+          type: string
+          example: "500.00"
+        managerName:
+          type: string
+          example: "A. Njeri"
+        explanation:
+          type: string
+          nullable: true
+
+    RegisterReconciliation:
+      type: object
+      required:
+        - id
+        - registerId
+        - storeId
+        - expectedTotal
+        - physicalTotal
+        - variance
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        registerId:
+          type: string
+        storeId:
+          type: string
+        expectedTotal:
+          type: string
+          example: "5000.00"
+        physicalTotal:
+          type: string
+          example: "4950.00"
+        variance:
+          type: string
+          example: "-50.00"
+        status:
+          type: string
+          enum: [OPEN, PENDING_APPROVAL, CLOSED]
+        managerName:
+          type: string
+          nullable: true
+        explanation:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    DayClosedEvent:
+      type: object
+      required:
+        - event
+        - timestamp
+        - data
+      properties:
+        event:
+          type: string
+          example: "DayClosed"
+        timestamp:
+          type: string
+          format: date-time
+        data:
+          type: object
+          required:
+            - registerId
+            - storeId
+            - expectedTotal
+            - physicalTotal
+            - variance
+          properties:
+            registerId:
+              type: string
+            storeId:
+              type: string
+            expectedTotal:
+              type: string
+            physicalTotal:
+              type: string
+            variance:
+              type: string
+            managerName:
+              type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+  parameters:
+    RegisterIdParam:
+      name: registerId
+      in: path
+      required: true
+      schema:
+        type: string
+
+paths:
+  /health:
+    get:
+      summary: Health check for the Sales Audit service
+      responses:
+        "200":
+          description: Service status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: sales-audit-service
+
+  /api/sales-audit/registers/{registerId}/reconciliation:
+    get:
+      summary: Get the open or closed reconciliation for a register
+      parameters:
+        - $ref: "#/components/parameters/RegisterIdParam"
+      responses:
+        "200":
+          description: Reconciliation summary retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterReconciliation"
+        "404":
+          description: Register record not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      summary: Close a register and reconcile the cash count against expected sales
+      parameters:
+        - $ref: "#/components/parameters/RegisterIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterClosingRequest"
+      responses:
+        "200":
+          description: Reconciliation created or updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterReconciliation"
+        "400":
+          description: Invalid reconciliation payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/sales-audit/registers:
+    get:
+      summary: List all register reconciliations for the day
+      responses:
+        "200":
+          description: Array of register reconciliations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RegisterReconciliation"
