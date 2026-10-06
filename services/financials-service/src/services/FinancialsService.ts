@@ -10,6 +10,22 @@ export class FinancialsService {
     return await this.financialsRepository.listLedgers();
   }
 
+  async listLedgersPaginated(page: number, limit: number) {
+    return await this.financialsRepository.listLedgersPaginated(page, limit);
+  }
+
+  async listLedgerEntriesPaginated(
+    page: number,
+    limit: number,
+    ledgerId?: string,
+  ) {
+    return await this.financialsRepository.listLedgerEntriesPaginated(
+      page,
+      limit,
+      ledgerId,
+    );
+  }
+
   async getLedgerById(ledgerId: string) {
     const rows = await this.financialsRepository.getLedgerById(ledgerId);
     if (!rows[0]) {

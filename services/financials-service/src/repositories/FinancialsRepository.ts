@@ -1,10 +1,76 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, desc } from "drizzle-orm";
 import { db } from "../db/db.js";
 import { financialLedgers, financialLedgerEntries } from "../db/schema.js";
 
 export class FinancialsRepository {
   async listLedgers() {
     return await db.select().from(financialLedgers);
+  }
+
+  async listLedgersPaginated(page = 1, limit = 20) {
+    const safePage = Number.isInteger(page) && page > 0 ? page : 1;
+    const safeLimit =
+      Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20;
+    const offset = (safePage - 1) * safeLimit;
+
+    const [data, countResult] = await Promise.all([
+      db
+        .select()
+        .from(financialLedgers)
+        .orderBy(financialLedgers.ledgerId)
+        .limit(safeLimit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)` }).from(financialLedgers),
+    ]);
+
+    const total = Number(countResult[0]?.count ?? 0);
+
+    return {
+      data,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+      },
+    };
+  }
+
+  async listLedgerEntriesPaginated(page = 1, limit = 20, ledgerId?: string) {
+    const safePage = Number.isInteger(page) && page > 0 ? page : 1;
+    const safeLimit =
+      Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20;
+    const offset = (safePage - 1) * safeLimit;
+
+    const where = ledgerId
+      ? eq(financialLedgerEntries.ledgerId, ledgerId)
+      : undefined;
+
+    const [data, countResult] = await Promise.all([
+      db
+        .select()
+        .from(financialLedgerEntries)
+        .where(where)
+        .orderBy(desc(financialLedgerEntries.createdAt))
+        .limit(safeLimit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(financialLedgerEntries)
+        .where(where),
+    ]);
+
+    const total = Number(countResult[0]?.count ?? 0);
+
+    return {
+      data,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+      },
+    };
   }
 
   async getLedgerById(ledgerId: string) {

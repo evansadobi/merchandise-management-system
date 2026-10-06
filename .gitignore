@@ -21,4 +21,7 @@ Thumbs.db
 .idea/
 *.swp
 
-coverage/
+coverage/*.bak
+*.save
+*.bak
+*.save

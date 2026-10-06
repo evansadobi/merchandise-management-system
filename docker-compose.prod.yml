@@ -1,0 +1,78 @@
+services:
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+
+  vendor-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  procurement-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  inventory-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  receiving-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  warehouse-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  retail-sales-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  sales-audit-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  financials-db:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+
+  vendor-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3001:3001"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@vendor-db:5432/vendor_db
+  procurement-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3002:3002"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@procurement-db:5432/procurement_db
+  inventory-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3003:3003"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@inventory-db:5432/inventory_db
+  receiving-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3004:3004"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@receiving-db:5432/receiving_db
+  warehouse-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3005:3005"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@warehouse-db:5432/warehouse_db
+  retail-sales-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3006:3006"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@retail-sales-db:5432/retail_sales_db
+  sales-audit-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3007:3007"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@sales-audit-db:5432/sales_audit_db
+  financials-service:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3008:3008"]
+    environment:
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@financials-db:5432/financials_db
