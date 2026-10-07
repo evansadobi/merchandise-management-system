@@ -1,4 +1,23 @@
 services:
+  web:
+    build: ./services/frontend
+    container_name: mms_web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      - vendor-service
+      - procurement-service
+      - inventory-service
+      - receiving-service
+      - warehouse-service
+      - retail-sales-service
+      - sales-audit-service
+      - financials-service
+
   redis:
     ports: !reset []
     restart: unless-stopped
@@ -76,3 +95,6 @@ services:
     ports: !override ["127.0.0.1:3008:3008"]
     environment:
       - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@financials-db:5432/financials_db
+
+volumes:
+  caddy_data:

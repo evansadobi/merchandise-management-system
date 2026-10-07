@@ -1,0 +1,43 @@
+:80 {
+	encode gzip
+
+	handle /api/vendors* {
+		reverse_proxy vendor-service:3001
+	}
+	handle /api/purchase-orders* {
+		reverse_proxy procurement-service:3002
+	}
+	handle /api/inventory* {
+		reverse_proxy inventory-service:3003
+	}
+	handle /api/grn* {
+		reverse_proxy receiving-service:3004
+	}
+	handle /api/expected-deliveries* {
+		reverse_proxy receiving-service:3004
+	}
+	handle /api/bins* {
+		reverse_proxy warehouse-service:3005
+	}
+	handle /api/putaway* {
+		reverse_proxy warehouse-service:3005
+	}
+	handle /api/picking* {
+		reverse_proxy warehouse-service:3005
+	}
+	handle /api/retail-sales* {
+		reverse_proxy retail-sales-service:3006
+	}
+	handle /api/sales-audit* {
+		reverse_proxy sales-audit-service:3007
+	}
+	handle /api/financials* {
+		reverse_proxy financials-service:3008
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
