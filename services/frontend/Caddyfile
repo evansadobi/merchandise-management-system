@@ -35,6 +35,19 @@
 		reverse_proxy financials-service:3008
 	}
 
+	handle /api/zones* {
+		reverse_proxy warehouse-service:3005
+	}
+	handle /api/aisles* {
+		reverse_proxy warehouse-service:3005
+	}
+	handle /api/shelves* {
+		reverse_proxy warehouse-service:3005
+	}
+	handle /api/transfers* {
+		reverse_proxy warehouse-service:3005
+	}
+
 	handle {
 		root * /srv
 		try_files {path} /index.html
