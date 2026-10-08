@@ -68,6 +68,8 @@ services:
   inventory-service:
     restart: unless-stopped
     ports: !override ["127.0.0.1:3003:3003"]
+    volumes:
+      - ./contracts:/contracts:ro
     environment:
       - DATABASE_URL=postgres://postgres:${DB_PASSWORD}@inventory-db:5432/inventory_db
   receiving-service:

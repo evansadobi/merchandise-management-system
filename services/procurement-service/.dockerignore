@@ -3,6 +3,5 @@ npm-debug.log
 .env
 .env.example
 dist
-drizzle
 .git
 .gitignore
