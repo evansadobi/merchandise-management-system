@@ -1,6 +1,11 @@
 :80 {
 	encode gzip
 
+	basic_auth {
+		admin $2a$14$d1vTij6EszD97iVL0imAbeq9UxbbOZiMHQdXvwLfLE6FkJsFQ/kZS
+	}
+
+
 	handle /api/vendors* {
 		reverse_proxy vendor-service:3001
 	}
